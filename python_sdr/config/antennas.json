@@ -1,0 +1,23 @@
+{
+  "loop_antenna": {
+    "device_index": 0,
+    "description": "Active HF loop on RTL-SDR (Direct Sampling Q) – use for AM/MW/HF only",
+    "default_sample_rate": 2400000.0,
+    "default_gain_db": 20.0,
+    "use_direct_sampling_q": true
+  },
+  "fm_broadcast": {
+    "device_index": 0,
+    "description": "Stock whip / VHF antenna – FM broadcast 88–108 MHz (quadrature mode)",
+    "default_sample_rate": 2400000.0,
+    "default_gain_db": 30.0,
+    "use_direct_sampling_q": false
+  },
+  "discone": {
+    "device_index": 0,
+    "description": "Broadband discone or stock whip (Quadrature) – same dongle for single-SDR setup",
+    "default_sample_rate": 2400000.0,
+    "default_gain_db": 25.0,
+    "use_direct_sampling_q": false
+  }
+}

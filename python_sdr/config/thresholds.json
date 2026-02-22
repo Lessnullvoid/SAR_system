@@ -1,0 +1,17 @@
+{
+  "default": {
+    "power_dbm_anomaly_threshold": 10.0,
+    "noise_floor_window_sec": 60.0,
+    "min_duration_sec": 2.0
+  },
+  "bands": {
+    "VLF": {
+      "power_dbm_anomaly_threshold": 8.0
+    },
+    "HF": {
+      "power_dbm_anomaly_threshold": 12.0
+    }
+  }
+}
+
+

@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+dist/
+build/
+
+# Virtual environment
+.venv/
+
+# Data (generated at runtime — satellite tiles, DB, news images)
+data/sat_cache/
+data/news_cache/
+data/seismo_em.db
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Process memory (local development notes)
+PROCESS_MEMORY.md
+
+# Logs
+*.log

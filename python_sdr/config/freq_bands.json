@@ -1,0 +1,56 @@
+{
+  "loop_antenna": [
+    {
+      "name": "VLF",
+      "start_hz": 300.0,
+      "stop_hz": 30000.0,
+      "step_hz": 1000.0
+    },
+    {
+      "name": "LF",
+      "start_hz": 30000.0,
+      "stop_hz": 300000.0,
+      "step_hz": 5000.0
+    },
+    {
+      "name": "MF",
+      "start_hz": 300000.0,
+      "stop_hz": 1700000.0,
+      "step_hz": 10000.0
+    },
+    {
+      "name": "HF",
+      "start_hz": 2000000.0,
+      "stop_hz": 30000000.0,
+      "step_hz": 20000.0
+    }
+  ],
+  "discone": [
+    {
+      "name": "VHF",
+      "start_hz": 30000000.0,
+      "stop_hz": 300000000.0,
+      "step_hz": 50000.0
+    },
+    {
+      "name": "FM",
+      "start_hz": 88000000.0,
+      "stop_hz": 108000000.0,
+      "step_hz": 50000.0
+    },
+    {
+      "name": "2m",
+      "start_hz": 144000000.0,
+      "stop_hz": 148000000.0,
+      "step_hz": 25000.0
+    },
+    {
+      "name": "70cm",
+      "start_hz": 430000000.0,
+      "stop_hz": 450000000.0,
+      "step_hz": 25000.0
+    }
+  ]
+}
+
+
