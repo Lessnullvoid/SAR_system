@@ -225,8 +225,8 @@ class TileItem(QtWidgets.QGraphicsObject):
         """
         pm = QtGui.QPixmap(str(path))
         if not pm.isNull():
-            if _IS_PI and (pm.width() > 128 or pm.height() > 128):
-                pm = pm.scaled(128, 128, QtCore.Qt.KeepAspectRatio,
+            if _IS_PI and (pm.width() > 64 or pm.height() > 64):
+                pm = pm.scaled(64, 64, QtCore.Qt.KeepAspectRatio,
                                QtCore.Qt.SmoothTransformation)
             self._pixmap_sat = pm
             self._sat_loaded = True
@@ -256,8 +256,9 @@ class TileItem(QtWidgets.QGraphicsObject):
         if self._news_image_paths:
             pm = QtGui.QPixmap(self._news_image_paths[0])
             if not pm.isNull():
-                if _IS_PI and (pm.width() > 128 or pm.height() > 128):
-                    pm = pm.scaled(128, 128, QtCore.Qt.KeepAspectRatio,
+                _pi_max = 64 if _IS_PI else 512
+                if pm.width() > _pi_max or pm.height() > _pi_max:
+                    pm = pm.scaled(_pi_max, _pi_max, QtCore.Qt.KeepAspectRatio,
                                    QtCore.Qt.SmoothTransformation)
                 self._news_pixmaps.append(pm)
             self._pixmap_news = self._news_pixmaps[0] if self._news_pixmaps else None
@@ -299,8 +300,9 @@ class TileItem(QtWidgets.QGraphicsObject):
             path = self._news_image_paths[i]
             pm = QtGui.QPixmap(path)
             if not pm.isNull():
-                if _IS_PI and (pm.width() > 128 or pm.height() > 128):
-                    pm = pm.scaled(128, 128, QtCore.Qt.KeepAspectRatio,
+                _pi_max = 64 if _IS_PI else 512
+                if pm.width() > _pi_max or pm.height() > _pi_max:
+                    pm = pm.scaled(_pi_max, _pi_max, QtCore.Qt.KeepAspectRatio,
                                    QtCore.Qt.SmoothTransformation)
                 self._news_pixmaps.append(pm)
         self._lazy_load_idx = end
@@ -1107,6 +1109,11 @@ class FaultMapWidget(QtWidgets.QWidget):
         for i in range(self._tile_load_idx, end):
             item = self._tile_load_queue[i]
             if not item._sat_loaded:
+                # On Pi, skip loading imagery for off-fault tiles to save RAM.
+                # They paint as solid dark anyway (dark overlay in paint()).
+                if _IS_PI and not item.tile.on_fault:
+                    item._sat_loaded = True
+                    continue
                 img_path = get_tile_image_path(item.tile.tile_id)
                 if img_path:
                     item._load_sat_image_no_update(img_path)
