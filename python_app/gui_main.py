@@ -1178,13 +1178,14 @@ class MainWindow(QtWidgets.QMainWindow):
         # ── Right panel: Fault map (full window height) ──
         if self._fault_map:
             self._top_hsplit.addWidget(self._fault_map)
-            self._top_hsplit.setStretchFactor(0, 1)  # SDR panel
-            self._top_hsplit.setStretchFactor(1, 1)  # Map panel
             screen = QtWidgets.QApplication.primaryScreen()
             sw = screen.size().width() if screen else 1500
-            map_w = int(sw * 0.45)
+            map_w = int(sw * 0.48)
             sdr_w = sw - map_w
-            self._fault_map.setMinimumWidth(int(sw * 0.3))
+            sdr_panel.setMaximumWidth(sdr_w)
+            self._fault_map.setMinimumWidth(map_w)
+            self._top_hsplit.setStretchFactor(0, 0)  # SDR: fixed
+            self._top_hsplit.setStretchFactor(1, 1)  # Map: takes remaining
             self._top_hsplit.setSizes([sdr_w, map_w])
         else:
             self._top_hsplit.setSizes([1000])
