@@ -86,7 +86,6 @@ SAR_system/
 ├── python_sdr/                    # Standalone SDR app (pre-SAR snapshot)
 │
 ├── SENSORS.md                     # Detailed sensor documentation
-├── PROCESS_MEMORY.md              # Full development history + technical details
 └── requirements.txt               # Python dependencies
 ```
 
@@ -292,7 +291,7 @@ requests>=2.28     Pillow>=9.0        python-osc>=1.8
 | File | Contents |
 |------|----------|
 | [SENSORS.md](SENSORS.md) | All sensor sources, endpoints, processing, scoring formulas, station lists |
-| [PROCESS_MEMORY.md](PROCESS_MEMORY.md) | Full development history, architecture decisions, technical details |
+
 
 ---
 
