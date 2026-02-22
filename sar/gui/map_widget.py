@@ -990,10 +990,10 @@ class FaultMapWidget(QtWidgets.QWidget):
         btn_fit.clicked.connect(self.fit_to_view)
         otl.addWidget(btn_fit)
 
-        # Kiosk mode: hide interactive controls (scanner auto-starts)
+        # Kiosk mode: hide nav controls (scanner auto-starts),
+        # keep satellite download button visible for first-run cache build
         if _IS_KIOSK:
             self._btn_scan.hide()
-            self._btn_download.hide()
             btn_fit.hide()
 
         # ── Bottom floating status labels ──
