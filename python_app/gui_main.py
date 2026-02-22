@@ -553,6 +553,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self._try_start_worker()
             if self._sdr_connected:
                 QtCore.QTimer.singleShot(5000, self._auto_start_scanner)
+            QtCore.QTimer.singleShot(10000, self._start_supercollider)
 
     # --- Keyboard shortcuts ---
 
@@ -1145,10 +1146,7 @@ class MainWindow(QtWidgets.QMainWindow):
             )
             self._drone_kp = 0.0
             self._drone_dst = 0.0
-
-            # Auto-launch SuperCollider (sclang) with the drone SynthDef
             self._sc_process = SuperColliderProcess()
-            self._sc_process.start()
 
             # ── Map scanner → auto-switch tabs ──
             self._fault_map._scanner.scanning_tile.connect(
@@ -1342,6 +1340,16 @@ class MainWindow(QtWidgets.QMainWindow):
 
         if self._sdr_connected:
             QtCore.QTimer.singleShot(5000, self._auto_start_scanner)
+
+        # Defer SuperCollider launch so JACK + sclang don't compete with
+        # tile loading and SDR startup for memory and CPU.
+        QtCore.QTimer.singleShot(10000, self._start_supercollider)
+
+    def _start_supercollider(self):
+        """Launch SuperCollider after tiles and SDR are up."""
+        if hasattr(self, "_sc_process") and self._sc_process is not None:
+            log.info("Launching SuperCollider (deferred)")
+            self._sc_process.start()
 
     def _try_start_worker(self):
         """Attempt to start the SDR worker.  If the RTL-SDR is not

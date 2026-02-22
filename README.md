@@ -256,13 +256,66 @@ Requires:
 - **Python 3.10+**
 - Internet access for sensor API polling
 
-### Raspberry Pi
+### Raspberry Pi 5 (8 GB recommended)
 
-The system runs on Pi 4 (8 GB recommended). Automatic optimizations:
-- Tile resolution: 128x128 (vs 512x512 desktop)
-- Reduced animation FPS, batched loading
-- JACK audio server for SuperCollider
-- Separate USB sound card recommended
+The system runs on Raspberry Pi 5 with 8 GB RAM. Pi 4 with less than 4 GB is not supported (the full tile map + SuperCollider + SDR pipeline exceeds ~650 MB).
+
+**1. System packages** (heavy libraries that can't compile on Pi):
+
+```bash
+sudo apt update
+sudo apt install python3-pyqt5 python3-pyqtgraph python3-numpy \
+    python3-scipy python3-pil python3-matplotlib \
+    supercollider sc3-plugins jackd2 git
+```
+
+Say **Yes** when asked about real-time priority for JACK.
+
+**2. Clone and set up virtual environment:**
+
+```bash
+git clone https://github.com/Lessnullvoid/SAR.git
+cd SAR
+python3 -m venv --system-site-packages .venv
+source .venv/bin/activate
+pip install pyrtlsdr sounddevice scikit-learn shapely pyproj requests python-osc
+```
+
+The `--system-site-packages` flag lets pip-installed packages coexist with the apt-installed PyQt5/numpy/scipy.
+
+**3. Increase swap** (safety net for peak memory during startup):
+
+```bash
+sudo sed -i 's/CONF_SWAPSIZE=.*/CONF_SWAPSIZE=2048/' /etc/dphys-swapfile
+sudo dphys-swapfile setup
+sudo dphys-swapfile swapon
+```
+
+**4. Audio group** (required for JACK real-time priority):
+
+```bash
+sudo usermod -a -G audio $USER
+```
+
+Log out and back in for the group change to take effect.
+
+**5. Run:**
+
+```bash
+cd ~/SAR
+source .venv/bin/activate
+python -m python_app.gui_main
+```
+
+On first run, click the **Satellite** button to download map tiles (~50 MB at Pi resolution). After that, tiles are cached locally.
+
+**Automatic Pi optimizations:**
+- Satellite tiles downloaded at 128px (vs 512px desktop), displayed at 64x64
+- Reduced animation FPS (30 fps vs 60 fps)
+- Batched tile loading to avoid GIL starvation of audio pipeline
+- SDR audio routed to BCM2835 headphone jack; SuperCollider via USB sound card
+- SuperCollider launch deferred until after map and SDR are stable
+- Staggered sensor polling to spread network and CPU load
 
 ---
 
