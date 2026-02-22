@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import logging
+import platform
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -48,7 +49,11 @@ _ESRI_IMAGERY_URL = (
     "https://server.arcgisonline.com/ArcGIS/rest/services/"
     "World_Imagery/MapServer/export"
 )
-_TILE_PX = 512
+_IS_PI = (
+    platform.system() == "Linux"
+    and platform.machine().startswith(("aarch64", "arm"))
+)
+_TILE_PX = 128 if _IS_PI else 512
 
 # Persistent no-data file
 _NODATA_FILE = _CACHE_DIR / "nodata_tiles.txt"

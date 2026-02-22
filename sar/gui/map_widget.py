@@ -1109,11 +1109,6 @@ class FaultMapWidget(QtWidgets.QWidget):
         for i in range(self._tile_load_idx, end):
             item = self._tile_load_queue[i]
             if not item._sat_loaded:
-                # On Pi, skip loading imagery for off-fault tiles to save RAM.
-                # They paint as solid dark anyway (dark overlay in paint()).
-                if _IS_PI and not item.tile.on_fault:
-                    item._sat_loaded = True
-                    continue
                 img_path = get_tile_image_path(item.tile.tile_id)
                 if img_path:
                     item._load_sat_image_no_update(img_path)
