@@ -2,6 +2,8 @@
 
 **Multi-sensor research and sonic instrument for the San Andreas Fault**
 
+![S.A.R System](img/sar1.png)
+
 ---
 
 ## Overview
