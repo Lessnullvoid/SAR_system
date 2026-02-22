@@ -147,10 +147,10 @@ class FMDemodulator(Demodulator):
     matching the pre-emphasis applied at the transmitter.  This gives a
     dramatic improvement in perceived audio quality (less hiss).
 
-    NOTE: FM uses a LOWER AGC target (0.05) than AM/SSB (0.12) because
-    FM broadcast audio is heavily compressed by stations — at the same
-    peak level FM sounds 2-3x louder.  The lower target equalizes
-    perceived loudness so band switches are seamless.
+    NOTE: FM uses a LOWER AGC target (0.03) than AM/SSB (0.12) because
+    FM audio (both broadcast and narrow-band amateur) has much higher
+    RMS-to-peak ratio.  The lower target equalizes perceived loudness
+    so band switches between AM/SSB and FM modes are seamless.
     """
 
     def __init__(self, channel_rate_hz: float, audio_rate_hz: float = 48000.0):
@@ -189,7 +189,7 @@ class FMDemodulator(Demodulator):
         # Decimate to audio rate
         audio = self._decimate_audio(audio)
 
-        return self._slow_agc(audio, target=0.05)
+        return self._slow_agc(audio, target=0.03)
 
 
 class AMDemodulator(Demodulator):
