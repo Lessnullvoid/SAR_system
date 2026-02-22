@@ -217,7 +217,7 @@ def _download_tile_image(tile: Tile, retries: int = 1) -> Optional[Path]:
 
     for attempt in range(retries + 1):
         try:
-            resp = requests.get(_ESRI_EXPORT_URL, params=params, timeout=15)
+            resp = requests.get(_ESRI_IMAGERY_URL, params=params, timeout=15)
             if resp.status_code == 200 and len(resp.content) > 500:
                 # Convert to high-contrast grayscale
                 img = Image.open(BytesIO(resp.content)).convert("L")
