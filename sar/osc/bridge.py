@@ -376,9 +376,15 @@ class SuperColliderProcess:
     def _start_jack(self) -> None:
         """Start JACK on a USB audio card (Linux only).
 
-        Searches /proc/asound/cards for USB or Sound Blaster devices.
-        Falls back to hw:0 if nothing found.
+        On PipeWire systems (Pi 5 / Bookworm), PipeWire provides JACK
+        compatibility via pipewire-jack — no separate jackd needed.
+        On older systems, starts jackd on the USB audio card directly.
         """
+        # Check if PipeWire is already providing JACK
+        if self._pipewire_has_jack():
+            log.info("PipeWire-JACK detected — skipping jackd start")
+            return
+
         usb_dev = "hw:0"
         try:
             cards = Path("/proc/asound/cards").read_text()
@@ -431,6 +437,30 @@ class SuperColliderProcess:
             log.warning("jackd not found — skipping JACK start")
         except Exception as exc:
             log.warning("JACK start failed: %s", exc)
+
+    @staticmethod
+    def _pipewire_has_jack() -> bool:
+        """Check if PipeWire is running and provides JACK compatibility."""
+        try:
+            pw = subprocess.run(
+                ["systemctl", "--user", "is-active", "pipewire"],
+                capture_output=True, text=True, timeout=3,
+            )
+            if pw.stdout.strip() != "active":
+                return False
+            # Check that the JACK socket exists (pipewire-jack installed)
+            jack_sock = Path("/run/user") / str(os.getuid()) / "pipewire-0"
+            if jack_sock.exists():
+                log.info("PipeWire active + JACK socket found: %s", jack_sock)
+                return True
+            # Alternatively check for libjack override
+            pw_jack = shutil.which("pw-jack")
+            if pw_jack:
+                log.info("PipeWire active + pw-jack found: %s", pw_jack)
+                return True
+            return False
+        except Exception:
+            return False
 
     def _drain_output(self) -> None:
         """Read sclang stdout and log it (runs in daemon thread)."""
