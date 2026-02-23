@@ -44,6 +44,9 @@ _BACKFILL_FILE = _CACHE_DIR / "backfill_progress.json"
 # GDELT DOC 2.0 API
 _GDELT_URL = "https://api.gdeltproject.org/api/v2/doc/doc"
 
+# Rate-limit cooldown: skip requests until this timestamp
+_rate_limit_until: float = 0.0
+
 # Historical start date — inauguration day
 _HISTORY_START = datetime(2025, 1, 20, tzinfo=timezone.utc)
 
@@ -172,7 +175,13 @@ def _gdelt_fetch(
     max_records: int = 250,
 ) -> List[dict]:
     """Low-level GDELT DOC 2.0 query.  Returns raw article dicts."""
+    global _rate_limit_until
     import requests
+
+    if time.time() < _rate_limit_until:
+        remaining = int(_rate_limit_until - time.time())
+        log.info("GDELT cooldown active, skipping request (%ds remaining)", remaining)
+        return []
 
     params: dict = {
         "query": _QUERY,
@@ -190,6 +199,10 @@ def _gdelt_fetch(
     for attempt, timeout in enumerate([45, 60], 1):
         try:
             resp = requests.get(_GDELT_URL, params=params, timeout=timeout)
+            if resp.status_code == 429:
+                _rate_limit_until = time.time() + 600
+                log.warning("GDELT 429 rate-limited — cooling off for 10 minutes")
+                return []
             resp.raise_for_status()
             break
         except Exception as exc:
@@ -310,8 +323,8 @@ def backfill_historical(
         if progress_callback:
             progress_callback(i + 1, total_weeks, len(all_new))
 
-        # Respect GDELT rate limits — 1 request per 5 seconds
-        time.sleep(5)
+        # GDELT rate-limits aggressively — 15s between backfill requests
+        time.sleep(15)
 
     log.info("Backfill complete: %d new articles from %d weeks",
              len(all_new), total_weeks)

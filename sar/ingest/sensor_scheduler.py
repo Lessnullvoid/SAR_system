@@ -96,7 +96,7 @@ class SensorScheduler(QtCore.QObject):
         geomag_interval_s: float = 300.0,
         gnss_interval_s: float = 1800.0,   # 30 min (daily data, slow update)
         weather_interval_s: float = 600.0,  # 10 min
-        news_interval_s: float = 600.0,     # 10 min
+        news_interval_s: float = 1800.0,    # 30 min (GDELT rate-limits aggressively)
         parent: Optional[QtCore.QObject] = None,
     ):
         super().__init__(parent)
@@ -534,34 +534,34 @@ class SensorScheduler(QtCore.QObject):
                 download_all_images(recent, max_workers=4)
                 save_articles(recent)
 
-            # Re-load full archive (cached + recent merged) and fix any
-            # missing images from earlier runs
-            articles = load_articles()
-            if articles:
-                download_all_images(articles, max_workers=4)
-                save_articles(articles)
-                self._news_articles = articles
-                self._emit_news_data(articles)
-                log.info("News: emitted %d articles after recent fetch", len(articles))
-
-            # ── Step 3: Historical backfill (always runs for new weeks) ─
-            if not is_backfill_complete():
-                log.info("News: backfilling history from 2025-01-20…")
-                new_articles = backfill_historical()
-                if new_articles:
-                    download_all_images(new_articles, max_workers=4)
-                    save_articles(new_articles)
-
-                # Reload the full merged archive
+                # Re-load full archive (cached + recent merged)
                 articles = load_articles()
                 if articles:
                     download_all_images(articles, max_workers=4)
                     save_articles(articles)
                     self._news_articles = articles
                     self._emit_news_data(articles)
-                    log.info("News: emitted %d articles after backfill", len(articles))
+                    log.info("News: emitted %d articles after recent fetch",
+                             len(articles))
+
+                # ── Step 3: Historical backfill (only if recent succeeded) ─
+                if not is_backfill_complete():
+                    log.info("News: backfilling history from 2025-01-20…")
+                    new_articles = backfill_historical()
+                    if new_articles:
+                        download_all_images(new_articles, max_workers=4)
+                        save_articles(new_articles)
+                        articles = load_articles()
+                        if articles:
+                            self._news_articles = articles
+                            self._emit_news_data(articles)
+                            log.info("News: emitted %d articles after backfill",
+                                     len(articles))
+                else:
+                    log.info("News: historical backfill already complete")
             else:
-                log.info("News: historical backfill already complete")
+                log.info("News: no recent articles (rate-limited or empty), "
+                         "skipping backfill")
 
         except Exception as exc:
             log.error("News fetch error: %s", exc)
