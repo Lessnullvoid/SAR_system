@@ -327,6 +327,35 @@ systemctl --user status pipewire wireplumber
 
 ---
 
+## Auto-Start on Boot
+
+SAR can launch automatically when the Pi desktop loads.
+
+### Install autostart
+
+```bash
+cd ~/SAR && git pull
+chmod +x ~/SAR/scripts/sar_autostart.sh
+mkdir -p ~/.config/autostart
+cp ~/SAR/scripts/sar.desktop ~/.config/autostart/
+```
+
+Reboot to test:
+
+```bash
+sudo reboot
+```
+
+SAR will start in fullscreen once the desktop is ready. Logs are written to `/tmp/sar.log`.
+
+### Disable autostart
+
+```bash
+rm ~/.config/autostart/sar.desktop
+```
+
+---
+
 ## Pi-Specific Optimizations
 
 The system automatically detects Raspberry Pi and applies these optimizations:
