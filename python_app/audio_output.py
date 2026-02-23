@@ -69,7 +69,10 @@ def list_output_devices() -> List[Dict]:
 def find_sdr_audio_device() -> Optional[int]:
     """Auto-detect the best output device for SDR audio.
 
-    On Raspberry Pi: prefers the built-in bcm2835 headphone jack.
+    On Raspberry Pi:
+      1. Prefers the built-in bcm2835 headphone jack (Pi 4 and earlier).
+      2. If no built-in audio (Pi 5 has no jack), falls back to the
+         first USB audio device so both SDR and SuperCollider share it.
     On macOS/desktop: returns None (use system default).
     """
     if not _IS_PI:
@@ -77,18 +80,20 @@ def find_sdr_audio_device() -> Optional[int]:
 
     devices = list_output_devices()
 
-    # Pi: prefer bcm2835 Headphones (3.5mm jack)
+    # Pi: prefer bcm2835 Headphones (3.5mm jack) — Pi 4 and earlier
     for d in devices:
         if "bcm" in d["name"].lower() or "headphone" in d["name"].lower():
             log.info("SDR audio → Pi built-in: [%d] %s", d["index"], d["name"])
             return d["index"]
 
-    # Fallback: first non-USB device
+    # Pi 5 (no audio jack): use the USB sound card for SDR too
     for d in devices:
-        if not d["is_usb"]:
-            log.info("SDR audio → fallback: [%d] %s", d["index"], d["name"])
+        if d["is_usb"]:
+            log.info("SDR audio → USB (no built-in jack): [%d] %s",
+                     d["index"], d["name"])
             return d["index"]
 
+    log.warning("SDR audio → no suitable device found, using system default")
     return None
 
 

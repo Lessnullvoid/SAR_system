@@ -511,6 +511,49 @@ class MainWindow(QtWidgets.QMainWindow):
         self.setWindowTitle("Seismo-EM SDR Console")
         self.resize(1500, 900)
 
+        self.setStyleSheet("""
+            QMainWindow, QWidget, QFrame, QSplitter {
+                background-color: #000000;
+                color: #c0d0e0;
+            }
+            QScrollBar:vertical, QScrollBar:horizontal {
+                background: #060a10;
+                border: none;
+                width: 8px; height: 8px;
+            }
+            QScrollBar::handle:vertical, QScrollBar::handle:horizontal {
+                background: #1a2a40;
+                border-radius: 4px;
+                min-height: 20px; min-width: 20px;
+            }
+            QScrollBar::add-line, QScrollBar::sub-line,
+            QScrollBar::add-page, QScrollBar::sub-page {
+                background: none; border: none;
+            }
+            QSplitter::handle { background: #0c1a2e; }
+            QComboBox {
+                background: #0a1a30; color: #a0b8d0;
+                border: 1px solid #1a2a40; padding: 2px 4px;
+                font-family: 'Helvetica Neue'; font-size: 10px;
+            }
+            QComboBox QAbstractItemView {
+                background: #0a1a30; color: #a0b8d0;
+                selection-background-color: #102a40;
+            }
+            QLineEdit {
+                background: #060a10; color: #c0d0e0;
+                border: 1px solid #1a2a40; padding: 2px 4px;
+            }
+            QSlider::groove:horizontal {
+                background: #0c1a2e; height: 4px; border-radius: 2px;
+            }
+            QSlider::handle:horizontal {
+                background: #1a3a60; width: 12px; margin: -4px 0;
+                border-radius: 6px;
+            }
+            QLabel { background: transparent; }
+        """)
+
         # State — LO (center) vs VFO (tuning) like SDR# / CubicSDR
         self._antenna_key = "loop_antenna"
         self._center_freq_hz = 1.0e6   # LO: RTL-SDR center frequency
@@ -534,7 +577,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self._sdr_connected = False  # track SDR state
 
         # Auto-detect audio output devices:
-        # Pi: SDR → bcm2835 headphones (3.5mm jack)
+        # Pi 4: SDR → bcm2835 headphones (3.5mm jack)
+        # Pi 5: SDR → USB sound card (no built-in jack)
         # Desktop: SDR → system default (None)
         self._sdr_audio_device = find_sdr_audio_device()
 
