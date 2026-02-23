@@ -212,7 +212,8 @@ class TileItem(QtWidgets.QGraphicsObject):
     def load_sat_image(self, path: Path) -> None:
         """Load satellite imagery from disk into the tile's pixmap.
 
-        On Raspberry Pi, scales the pixmap down to 128x128 to save memory.
+        On Raspberry Pi, scales the pixmap down to 256x256 to balance
+        quality and memory (~120 MB for all tiles on Pi 5 with 8 GB).
         """
         self._load_sat_image_no_update(path)
         self.update()
@@ -225,8 +226,8 @@ class TileItem(QtWidgets.QGraphicsObject):
         """
         pm = QtGui.QPixmap(str(path))
         if not pm.isNull():
-            if _IS_PI and (pm.width() > 64 or pm.height() > 64):
-                pm = pm.scaled(64, 64, QtCore.Qt.KeepAspectRatio,
+            if _IS_PI and (pm.width() > 256 or pm.height() > 256):
+                pm = pm.scaled(256, 256, QtCore.Qt.KeepAspectRatio,
                                QtCore.Qt.SmoothTransformation)
             self._pixmap_sat = pm
             self._sat_loaded = True
@@ -256,7 +257,7 @@ class TileItem(QtWidgets.QGraphicsObject):
         if self._news_image_paths:
             pm = QtGui.QPixmap(self._news_image_paths[0])
             if not pm.isNull():
-                _pi_max = 64 if _IS_PI else 512
+                _pi_max = 256 if _IS_PI else 512
                 if pm.width() > _pi_max or pm.height() > _pi_max:
                     pm = pm.scaled(_pi_max, _pi_max, QtCore.Qt.KeepAspectRatio,
                                    QtCore.Qt.SmoothTransformation)
@@ -300,7 +301,7 @@ class TileItem(QtWidgets.QGraphicsObject):
             path = self._news_image_paths[i]
             pm = QtGui.QPixmap(path)
             if not pm.isNull():
-                _pi_max = 64 if _IS_PI else 512
+                _pi_max = 256 if _IS_PI else 512
                 if pm.width() > _pi_max or pm.height() > _pi_max:
                     pm = pm.scaled(_pi_max, _pi_max, QtCore.Qt.KeepAspectRatio,
                                    QtCore.Qt.SmoothTransformation)
@@ -903,14 +904,9 @@ class FaultMapWidget(QtWidgets.QWidget):
         # Build view — optimized for smooth navigation
         self._view = QtWidgets.QGraphicsView(self._scene, self)
 
-        if _IS_PI:
-            # Pi: disable expensive render hints — nearest-neighbour is fine
-            # for 128x128 tiles displayed at ~100px on small screens
-            self._view.setRenderHints(QtGui.QPainter.RenderHints())
-        else:
-            self._view.setRenderHints(
-                QtGui.QPainter.Antialiasing | QtGui.QPainter.SmoothPixmapTransform
-            )
+        self._view.setRenderHints(
+            QtGui.QPainter.Antialiasing | QtGui.QPainter.SmoothPixmapTransform
+        )
 
         if _IS_KIOSK:
             # Kiosk mode: no user interaction with the map (scanner only)

@@ -53,7 +53,7 @@ _IS_PI = (
     platform.system() == "Linux"
     and platform.machine().startswith(("aarch64", "arm"))
 )
-_TILE_PX = 128 if _IS_PI else 512
+_TILE_PX = 256 if _IS_PI else 512
 
 # Persistent no-data file
 _NODATA_FILE = _CACHE_DIR / "nodata_tiles.txt"
