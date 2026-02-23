@@ -154,6 +154,16 @@ class TileItem(QtWidgets.QGraphicsObject):
         else:
             painter.fillRect(r, QtGui.QColor(2, 3, 6))
 
+        # ── Layer 1b: Invert the tile when scanner is focused ──
+        if self._scanner_focus and self._pixmap_sat:
+            painter.setCompositionMode(
+                QtGui.QPainter.CompositionMode_Difference
+            )
+            painter.fillRect(r, QtGui.QColor(255, 255, 255))
+            painter.setCompositionMode(
+                QtGui.QPainter.CompositionMode_SourceOver
+            )
+
         # ── Layer 2: Grid — always visible, even zoomed out ──
         if selected:
             pen = QtGui.QPen(QtGui.QColor(0, 220, 255, 240))
