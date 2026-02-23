@@ -442,6 +442,7 @@ requests>=2.28     Pillow>=9.0        python-osc>=1.8
 | [SENSORS.md](SENSORS.md) | All sensor sources, endpoints, processing, scoring formulas, station lists |
 | [RASPBERRY_PI_SETUP.md](RASPBERRY_PI_SETUP.md) | Complete Raspberry Pi 5 installation and configuration guide |
 
+![S.A.R Installation](img/installation.png)
 
 ---
 
