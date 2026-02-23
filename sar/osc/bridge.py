@@ -200,6 +200,35 @@ class OSCBridge:
         except Exception as exc:
             log.debug("OSC top tiles error: %s", exc)
 
+    _ALERT_LEVEL_MAP = {
+        "info": 0.0, "watch": 0.25,
+        "warning": 0.6, "critical": 1.0,
+    }
+
+    def _send_synth_state(
+        self,
+        prefix: str,
+        max_score: float,
+        kp: float,
+        dst: float,
+        total_events: int,
+        alert_level: str,
+    ) -> None:
+        """Send 5 OSC messages to a synth namespace (drone or resonator)."""
+        if not self._enabled or not self._client:
+            return
+
+        alert_val = self._ALERT_LEVEL_MAP.get(alert_level, 0.0)
+        try:
+            self._client.send_message(f"/sar/{prefix}/activity", float(max_score))
+            self._client.send_message(f"/sar/{prefix}/kp", float(kp))
+            self._client.send_message(f"/sar/{prefix}/dst", float(dst))
+            self._client.send_message(f"/sar/{prefix}/events", int(total_events))
+            self._client.send_message(f"/sar/{prefix}/alert", alert_val)
+            self._msg_count += 5
+        except Exception as exc:
+            log.warning("OSC %s send error: %s", prefix, exc)
+
     def send_drone_state(
         self,
         max_score: float,
@@ -226,31 +255,28 @@ class OSCBridge:
         alert_level : str
             Highest current fusion alert level.
         """
-        if not self._enabled or not self._client:
-            return
+        self._send_synth_state("drone", max_score, kp, dst, total_events, alert_level)
+        log.info(
+            "OSC drone → activity=%.3f  kp=%.1f  dst=%.0f  "
+            "events=%d  alert=%.2f",
+            max_score, kp, dst, total_events,
+            self._ALERT_LEVEL_MAP.get(alert_level, 0.0),
+        )
 
-        level_map = {
-            "info": 0.0, "watch": 0.25,
-            "warning": 0.6, "critical": 1.0,
-        }
+    def send_resonator_state(
+        self,
+        max_score: float,
+        kp: float = 0.0,
+        dst: float = 0.0,
+        total_events: int = 0,
+        alert_level: str = "info",
+    ) -> None:
+        """Send a compact summary for the sympathetic string resonator.
 
-        try:
-            self._client.send_message("/sar/drone/activity", float(max_score))
-            self._client.send_message("/sar/drone/kp", float(kp))
-            self._client.send_message("/sar/drone/dst", float(dst))
-            self._client.send_message("/sar/drone/events", int(total_events))
-            self._client.send_message(
-                "/sar/drone/alert", level_map.get(alert_level, 0.0)
-            )
-            self._msg_count += 5
-            log.info(
-                "OSC drone → activity=%.3f  kp=%.1f  dst=%.0f  "
-                "events=%d  alert=%.2f",
-                max_score, kp, dst, total_events,
-                level_map.get(alert_level, 0.0),
-            )
-        except Exception as exc:
-            log.warning("OSC drone send error: %s", exc)
+        Same 5-parameter interface as the drone but targets
+        /sar/resonator/* OSC addresses.
+        """
+        self._send_synth_state("resonator", max_score, kp, dst, total_events, alert_level)
 
     def stats(self) -> Dict:
         return {
@@ -270,8 +296,8 @@ _SCLANG_PATHS_MAC = [
     os.path.expanduser("~/Applications/SuperCollider.app/Contents/MacOS/sclang"),
 ]
 
-_DRONE_SCD = str(
-    Path(__file__).resolve().parent.parent.parent / "supercollider" / "sar_drone.scd"
+_MAIN_SCD = str(
+    Path(__file__).resolve().parent.parent.parent / "supercollider" / "sar_main.scd"
 )
 
 
@@ -292,13 +318,13 @@ def _find_sclang() -> Optional[str]:
 class SuperColliderProcess:
     """Manages the lifecycle of sclang (+ JACK on Linux/Pi).
 
-    Launches sclang with the SAR drone SynthDef automatically,
-    and tears it down on exit.
+    Launches sclang with the SAR audio engine automatically
+    (drone + resonator), and tears it down on exit.
 
     Parameters
     ----------
     scd_path : str | None
-        Path to the .scd file. Defaults to supercollider/sar_drone.scd.
+        Path to the .scd file. Defaults to supercollider/sar_main.scd.
     auto_jack : bool
         On Linux, start JACK on the USB audio card before sclang.
     """
@@ -308,7 +334,7 @@ class SuperColliderProcess:
         scd_path: Optional[str] = None,
         auto_jack: bool = True,
     ):
-        self._scd = scd_path or _DRONE_SCD
+        self._scd = scd_path or _MAIN_SCD
         self._auto_jack = auto_jack
         self._sc_proc: Optional[subprocess.Popen] = None
         self._jack_proc: Optional[subprocess.Popen] = None
@@ -336,7 +362,7 @@ class SuperColliderProcess:
             return False
 
         if not os.path.isfile(self._scd):
-            log.warning("Drone SynthDef not found: %s", self._scd)
+            log.warning("SCD file not found: %s", self._scd)
             return False
 
         is_linux = platform.system() == "Linux"

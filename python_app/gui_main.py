@@ -2115,12 +2115,18 @@ class MainWindow(QtWidgets.QMainWindow):
         if lines:
             self._top_tiles_list.setPlainText("\n".join(lines))
 
-        # ── Send drone state to SuperCollider ──
+        # ── Send synth state to SuperCollider (drone + resonator) ──
         if hasattr(self, "_osc_bridge") and self._osc_bridge.enabled:
             max_sc = max(scores.values()) if scores else 0.0
             self._drone_last_max_score = max_sc
             total_ev = getattr(self, "_drone_eq_count_24h", 0)
             self._osc_bridge.send_drone_state(
+                max_score=max_sc,
+                kp=self._drone_kp,
+                dst=self._drone_dst,
+                total_events=total_ev,
+            )
+            self._osc_bridge.send_resonator_state(
                 max_score=max_sc,
                 kp=self._drone_kp,
                 dst=self._drone_dst,
@@ -2136,15 +2142,17 @@ class MainWindow(QtWidgets.QMainWindow):
         tec = info.get("tec", 0)
         tec_d = info.get("tec_delta", 0)
 
-        # Cache for drone OSC and send immediately
+        # Cache for synth OSC and send immediately
         self._drone_kp = kp
         self._drone_dst = dst
         if hasattr(self, "_osc_bridge") and self._osc_bridge.enabled:
+            _ms = getattr(self, "_drone_last_max_score", 0.0)
+            _ev = getattr(self, "_drone_eq_count_24h", 0)
             self._osc_bridge.send_drone_state(
-                max_score=getattr(self, "_drone_last_max_score", 0.0),
-                kp=kp,
-                dst=dst,
-                total_events=getattr(self, "_drone_eq_count_24h", 0),
+                max_score=_ms, kp=kp, dst=dst, total_events=_ev,
+            )
+            self._osc_bridge.send_resonator_state(
+                max_score=_ms, kp=kp, dst=dst, total_events=_ev,
             )
 
         # Color code by storm level
