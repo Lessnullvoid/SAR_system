@@ -257,6 +257,19 @@ python -m python_app.gui_main
 
 The application starts in **fullscreen**. Press **F** to toggle fullscreen mode.
 
+### SuperCollider synth selection
+
+By default both synths (drone + sympathetic string resonator) launch together.
+Use the `--synth` flag to select which one:
+
+```bash
+python -m python_app.gui_main --synth both        # default — drone + resonator
+python -m python_app.gui_main --synth drone        # drone only
+python -m python_app.gui_main --synth resonator    # resonator only
+```
+
+On the Raspberry Pi autostart script you can also set the `SAR_SYNTH` environment variable before boot (e.g. in `~/.bashrc` or directly in `scripts/sar_autostart.sh`).
+
 Requires:
 - **RTL-SDR** USB dongle (pyrtlsdr) — system runs without it (map + sensors still active)
 - **SuperCollider** installed (optional — drone disabled if not found)
@@ -355,7 +368,9 @@ Log out and back in (or reboot) for the group change to take effect.
 ```bash
 cd ~/SAR
 source .venv/bin/activate
-python -m python_app.gui_main
+python -m python_app.gui_main                  # both synths (default)
+python -m python_app.gui_main --synth drone    # drone only
+python -m python_app.gui_main --synth resonator # resonator only
 ```
 
 The application starts in fullscreen. Press **F** to toggle fullscreen mode.
