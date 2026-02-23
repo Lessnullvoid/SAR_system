@@ -260,6 +260,8 @@ Requires:
 
 The system runs on Raspberry Pi 5 with 8 GB RAM. Pi 4 with less than 4 GB is not supported (the full tile map + SuperCollider + SDR pipeline uses ~700 MB).
 
+> **Full setup guide:** [RASPBERRY_PI_SETUP.md](RASPBERRY_PI_SETUP.md) — step-by-step instructions covering system packages, PipeWire audio, USB sound card, Python venv, troubleshooting, and monitoring.
+
 #### 1. System packages
 
 Heavy libraries that can't compile on Pi must be installed via apt:
@@ -438,6 +440,7 @@ requests>=2.28     Pillow>=9.0        python-osc>=1.8
 | File | Contents |
 |------|----------|
 | [SENSORS.md](SENSORS.md) | All sensor sources, endpoints, processing, scoring formulas, station lists |
+| [RASPBERRY_PI_SETUP.md](RASPBERRY_PI_SETUP.md) | Complete Raspberry Pi 5 installation and configuration guide |
 
 
 ---
