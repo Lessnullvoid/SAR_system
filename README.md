@@ -31,8 +31,8 @@ S.A.R does **not** claim to predict earthquakes. It explores correlations and pa
 ```
 SAR_system/
 ├── python_app/                    # SDR application + ML pipeline
-│   ├── main.py                    # Entry point
-│   ├── gui_main.py                # Main GUI (3-column layout, PyQt5)
+│   ├── gui_main.py                # Entry point + Main GUI (PyQt5)
+│   ├── __init__.py                # Package docstring
 │   ├── dsp_core.py                # FFT, filtering, decimation
 │   ├── demod.py                   # FM/AM/SSB demodulators with AGC
 │   ├── audio_output.py            # Ring-buffer audio thread (sounddevice)
@@ -77,17 +77,21 @@ SAR_system/
 │       └── tile_store.py          # SQLite tile state persistence
 │
 ├── supercollider/
-│   ├── sar_drone.scd              # Geological drone SynthDef
-│   └── start_sc.sh               # Manual SC startup script (Pi)
+│   └── sar_drone.scd              # Geological drone SynthDef
+│
+├── scripts/
+│   ├── sar_autostart.sh           # Pi auto-start script
+│   └── sar.desktop                # Desktop autostart entry
 │
 ├── data/
 │   ├── sat_cache/                 # Satellite imagery cache (PNG)
-│   ├── news_cache/                # Downloaded news images (512x512 PNG)
+│   ├── news_cache/                # Downloaded news images + articles.json
 │   └── seismo_em.db               # ML feature/anomaly SQLite database
 │
 ├── python_sdr/                    # Standalone SDR app (pre-SAR snapshot)
 │
 ├── SENSORS.md                     # Detailed sensor documentation
+├── RASPBERRY_PI_SETUP.md          # Pi 5 installation guide
 └── requirements.txt               # Python dependencies
 ```
 
@@ -107,7 +111,7 @@ All data sources are free, open access, and require no API keys.
 | 6 | **Weather** | NOAA NWS API (19 stations) | 10 min | 5% |
 
 Additional contextual feeds:
-- **GDELT Project** — News articles (ICE/immigration focus) geocoded to fault tiles, displayed as map overlays (15 min)
+- **GDELT Project** — News articles (ICE/immigration focus) geocoded to fault tiles, displayed as map overlays (10 min)
 - **U.S. Census / ACS** — Demographic data for the Social tab (on startup)
 - **Native Land Digital** — Indigenous territory data (on startup)
 
@@ -138,7 +142,8 @@ The fault is modeled as a **north-south corridor** subdivided into ~800 on-fault
 The fault corridor map renders satellite imagery (ESRI World Imagery, grayscale with histogram stretch) with vector overlays (coastline, highways, secondary faults, cities) and real-time earthquake markers.
 
 **Tile rendering:**
-- Active tiles (score > 0.05): fully inverted (negative) satellite imagery
+- Scanner-focused tile: color-inverted (negative) for immediate visibility
+- Active tiles (score > 0.05): highlighted with cyan border
 - Quiet on-fault tiles: original full-contrast imagery
 - Off-fault tiles: darkened overlay
 
@@ -180,7 +185,7 @@ RTL-SDR USB → Reader Thread → SpectrumWorker DSP
   → Ring buffer → Audio playback thread → sounddevice
 ```
 
-All demodulators normalize to consistent output levels via slow AGC. The volume slider acts as an absolute ceiling — set it to 40% and no band ever exceeds 40%.
+All demodulators normalize to consistent output levels via slow AGC (FM target 0.03, AM/SSB target 0.12 to equalize perceived loudness). The volume slider acts as an absolute ceiling — set it to 50% and no band ever exceeds 50%. Default volume: 90%.
 
 ---
 
@@ -202,7 +207,7 @@ A continuous **geological drone** evolves through 7 minor keys (Am → Dm → Gm
 | `dst` (nT) | Microtonal detuning (storm = dissonance) |
 | `alert` (0-1) | Dissonant minor 9th tension tone |
 
-Python auto-launches `sclang` on startup and kills it on exit.
+Python auto-launches `sclang` on startup (via `pw-jack` on PipeWire systems) and kills it on exit. On Raspberry Pi 5, both SDR and SuperCollider audio are mixed through PipeWire to a shared USB sound card.
 
 ---
 
@@ -245,20 +250,22 @@ Tabs auto-rotate (ML → Sensors → Social → Audio), context-driven by scanne
 ## Running
 
 ```bash
-cd SAR_system
+cd SAR
 pip install -r requirements.txt
 python -m python_app.gui_main
 ```
 
+The application starts in **fullscreen**. Press **F** to toggle fullscreen mode.
+
 Requires:
-- **RTL-SDR** USB dongle (pyrtlsdr)
-- **SuperCollider** installed (optional — system works without it)
+- **RTL-SDR** USB dongle (pyrtlsdr) — system runs without it (map + sensors still active)
+- **SuperCollider** installed (optional — drone disabled if not found)
 - **Python 3.10+**
 - Internet access for sensor API polling
 
 ### Raspberry Pi 5 Setup (8 GB recommended)
 
-The system runs on Raspberry Pi 5 with 8 GB RAM. Pi 4 with less than 4 GB is not supported (the full tile map + SuperCollider + SDR pipeline uses ~700 MB).
+The system runs on Raspberry Pi 5 with 8 GB RAM. Pi 4 with less than 4 GB is not supported (the full tile map + SuperCollider + SDR pipeline uses ~1.8 GB).
 
 > **Full setup guide:** [RASPBERRY_PI_SETUP.md](RASPBERRY_PI_SETUP.md) — step-by-step instructions covering system packages, PipeWire audio, USB sound card, Python venv, troubleshooting, and monitoring.
 
@@ -399,7 +406,7 @@ pgrep -f "python_app.gui_main" | xargs -I{} cat /proc/{}/status | grep -E "VmRSS
 free -h
 ```
 
-Typical usage: ~700 MB RAM, ~50% of one CPU core (out of 4).
+Typical usage: ~1.8 GB RAM, ~70% of one CPU core (out of 4).
 
 #### Automatic Pi optimizations
 
@@ -410,6 +417,7 @@ Typical usage: ~700 MB RAM, ~50% of one CPU core (out of 4).
 - SuperCollider launched via `pw-jack` for PipeWire JACK compatibility
 - SuperCollider launch deferred 10s after map + SDR are stable
 - Staggered sensor polling to spread network and CPU load
+- Auto-start on boot via desktop autostart entry (see [RASPBERRY_PI_SETUP.md](RASPBERRY_PI_SETUP.md))
 
 ---
 
