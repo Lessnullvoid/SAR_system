@@ -256,22 +256,64 @@ Requires:
 - **Python 3.10+**
 - Internet access for sensor API polling
 
-### Raspberry Pi 5 (8 GB recommended)
+### Raspberry Pi 5 Setup (8 GB recommended)
 
-The system runs on Raspberry Pi 5 with 8 GB RAM. Pi 4 with less than 4 GB is not supported (the full tile map + SuperCollider + SDR pipeline exceeds ~650 MB).
+The system runs on Raspberry Pi 5 with 8 GB RAM. Pi 4 with less than 4 GB is not supported (the full tile map + SuperCollider + SDR pipeline uses ~700 MB).
 
-**1. System packages** (heavy libraries that can't compile on Pi):
+#### 1. System packages
+
+Heavy libraries that can't compile on Pi must be installed via apt:
 
 ```bash
 sudo apt update
-sudo apt install python3-pyqt5 python3-pyqtgraph python3-numpy \
+sudo apt install -y \
+    python3-pyqt5 python3-pyqtgraph python3-numpy \
     python3-scipy python3-pil python3-matplotlib \
     supercollider sc3-plugins jackd2 git
 ```
 
 Say **Yes** when asked about real-time priority for JACK.
 
-**2. Clone and set up virtual environment:**
+#### 2. Audio setup (PipeWire + USB sound card)
+
+Raspberry Pi 5 has **no 3.5mm audio jack**. Both SDR and SuperCollider share a USB sound card through PipeWire (the default audio server on Raspberry Pi OS Bookworm).
+
+Install PipeWire's ALSA and JACK compatibility layers:
+
+```bash
+sudo apt install -y pipewire-alsa pipewire-jack
+```
+
+Restart PipeWire:
+
+```bash
+systemctl --user restart pipewire wireplumber
+```
+
+Verify the USB sound card appears as a sink:
+
+```bash
+wpctl status
+```
+
+Look for your USB card under **Audio → Sinks** (e.g. `Sound Blaster Play! 3 Analog Stereo`). Set it as the default output:
+
+```bash
+wpctl set-default <SINK_ID>
+wpctl set-volume <SINK_ID> 1.0
+```
+
+Replace `<SINK_ID>` with the number next to your USB card in the `wpctl status` output.
+
+Verify audio works:
+
+```bash
+speaker-test -c 2 -t wav
+```
+
+> **Note (Pi 4):** If your Pi has a 3.5mm jack, SDR audio routes there automatically and SuperCollider uses the USB card via JACK — no PipeWire configuration needed.
+
+#### 3. Clone and set up virtual environment
 
 ```bash
 git clone https://github.com/Lessnullvoid/SAR.git
@@ -283,7 +325,7 @@ pip install pyrtlsdr sounddevice scikit-learn shapely pyproj requests python-osc
 
 The `--system-site-packages` flag lets pip-installed packages coexist with the apt-installed PyQt5/numpy/scipy.
 
-**3. Increase swap** (safety net for peak memory during startup):
+#### 4. Increase swap (safety net for peak memory)
 
 ```bash
 sudo sed -i 's/CONF_SWAPSIZE=.*/CONF_SWAPSIZE=2048/' /etc/dphys-swapfile
@@ -291,15 +333,15 @@ sudo dphys-swapfile setup
 sudo dphys-swapfile swapon
 ```
 
-**4. Audio group** (required for JACK real-time priority):
+#### 5. Audio group (real-time priority for audio threads)
 
 ```bash
 sudo usermod -a -G audio $USER
 ```
 
-Log out and back in for the group change to take effect.
+Log out and back in (or reboot) for the group change to take effect.
 
-**5. Run:**
+#### 6. Run
 
 ```bash
 cd ~/SAR
@@ -307,14 +349,64 @@ source .venv/bin/activate
 python -m python_app.gui_main
 ```
 
-On first run, click the **Satellite** button to download map tiles (~50 MB at Pi resolution). After that, tiles are cached locally.
+The application starts in fullscreen. Press **F** to toggle fullscreen mode.
 
-**Automatic Pi optimizations:**
-- Satellite tiles downloaded at 128px (vs 512px desktop), displayed at 64x64
-- Reduced animation FPS (30 fps vs 60 fps)
+On first run, click the **Satellite** button in the map panel to download imagery tiles (~100 MB at Pi resolution). Tiles are cached in `data/sat_cache/` for subsequent runs.
+
+#### 7. Updating
+
+```bash
+cd ~/SAR
+git pull
+```
+
+If satellite tiles were re-downloaded at a different resolution, clear the cache:
+
+```bash
+rm ~/SAR/data/sat_cache/SAF_*.png
+```
+
+Then restart the app and click **Satellite** again.
+
+#### Hardware requirements
+
+| Component | Required | Notes |
+|-----------|----------|-------|
+| Raspberry Pi 5 | 8 GB RAM | Pi 4 with 4+ GB may work but is untested |
+| USB sound card | Yes | e.g. Creative Sound Blaster Play! 3 |
+| RTL-SDR dongle | For radio | e.g. RTL-SDR Blog V3/V4 |
+| Display | HDMI | GUI requires a display (not headless) |
+| Internet | Yes | Sensor APIs require network access |
+| SD card | 32 GB+ | ~200 MB for app + tiles + database |
+
+#### Monitoring resource usage
+
+Check the app's memory and CPU in real time:
+
+```bash
+# Quick snapshot
+ps aux | grep python
+
+# Live monitoring
+top -p $(pgrep -f "python_app.gui_main")
+
+# Detailed memory breakdown
+pgrep -f "python_app.gui_main" | xargs -I{} cat /proc/{}/status | grep -E "VmRSS|VmSwap"
+
+# System-wide overview
+free -h
+```
+
+Typical usage: ~700 MB RAM, ~50% of one CPU core (out of 4).
+
+#### Automatic Pi optimizations
+
+- Satellite tiles downloaded at 256px (vs 512px desktop) with smooth rendering
+- Global dark stylesheet (overrides Pi desktop theme for pure black GUI)
 - Batched tile loading to avoid GIL starvation of audio pipeline
-- SDR audio routed to BCM2835 headphone jack; SuperCollider via USB sound card
-- SuperCollider launch deferred until after map and SDR are stable
+- Audio routed through PipeWire (Pi 5) or BCM2835 jack (Pi 4)
+- SuperCollider launched via `pw-jack` for PipeWire JACK compatibility
+- SuperCollider launch deferred 10s after map + SDR are stable
 - Staggered sensor polling to spread network and CPU load
 
 ---
