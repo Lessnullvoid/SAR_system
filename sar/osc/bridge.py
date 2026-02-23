@@ -341,15 +341,25 @@ class SuperColliderProcess:
 
         is_linux = platform.system() == "Linux"
 
-        # On Linux/Pi: start JACK on USB audio card first
+        # On Linux/Pi: ensure JACK is available for scsynth
+        use_pw_jack = False
         if is_linux and self._auto_jack:
-            self._start_jack()
+            if self._pipewire_has_jack():
+                use_pw_jack = True
+                log.info("Will launch sclang via pw-jack (PipeWire)")
+            else:
+                self._start_jack()
 
-        # Launch sclang
+        # Launch sclang (via pw-jack on PipeWire systems so scsynth
+        # connects to PipeWire's JACK layer instead of raw ALSA)
         try:
-            log.info("Starting sclang: %s %s", sclang, self._scd)
+            if use_pw_jack:
+                cmd = ["pw-jack", sclang, self._scd]
+            else:
+                cmd = [sclang, self._scd]
+            log.info("Starting sclang: %s", " ".join(cmd))
             self._sc_proc = subprocess.Popen(
-                [sclang, self._scd],
+                cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
