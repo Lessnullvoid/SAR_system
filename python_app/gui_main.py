@@ -15,6 +15,7 @@ Architecture:
 """
 from __future__ import annotations
 
+import argparse
 import json
 import logging
 import os
@@ -61,7 +62,7 @@ try:
     from sar.geo.tile_grid import build_tile_grid
     from sar.gui.map_widget import FaultMapWidget
     from sar.ingest.sensor_scheduler import SensorScheduler
-    from sar.osc.bridge import OSCBridge, SuperColliderProcess
+    from sar.osc.bridge import OSCBridge, SuperColliderProcess, get_scd_path
     _HAS_SAR_GEO = True
 except ImportError:
     _HAS_SAR_GEO = False
@@ -506,8 +507,9 @@ class SpectrumPlotWidget(pg.PlotWidget):
 # ---------------------------------------------------------------------------
 
 class MainWindow(QtWidgets.QMainWindow):
-    def __init__(self):
+    def __init__(self, synth_mode: str = "both"):
         super().__init__()
+        self._synth_mode = synth_mode
         self.setWindowTitle("Seismo-EM SDR Console")
         self.resize(1500, 900)
 
@@ -1190,7 +1192,9 @@ class MainWindow(QtWidgets.QMainWindow):
             )
             self._drone_kp = 0.0
             self._drone_dst = 0.0
-            self._sc_process = SuperColliderProcess()
+            self._sc_process = SuperColliderProcess(
+                scd_path=get_scd_path(self._synth_mode)
+            )
 
             # ── Map scanner → auto-switch tabs ──
             self._fault_map._scanner.scanning_tile.connect(
@@ -2120,18 +2124,20 @@ class MainWindow(QtWidgets.QMainWindow):
             max_sc = max(scores.values()) if scores else 0.0
             self._drone_last_max_score = max_sc
             total_ev = getattr(self, "_drone_eq_count_24h", 0)
-            self._osc_bridge.send_drone_state(
-                max_score=max_sc,
-                kp=self._drone_kp,
-                dst=self._drone_dst,
-                total_events=total_ev,
-            )
-            self._osc_bridge.send_resonator_state(
-                max_score=max_sc,
-                kp=self._drone_kp,
-                dst=self._drone_dst,
-                total_events=total_ev,
-            )
+            if self._synth_mode in ("both", "drone"):
+                self._osc_bridge.send_drone_state(
+                    max_score=max_sc,
+                    kp=self._drone_kp,
+                    dst=self._drone_dst,
+                    total_events=total_ev,
+                )
+            if self._synth_mode in ("both", "resonator"):
+                self._osc_bridge.send_resonator_state(
+                    max_score=max_sc,
+                    kp=self._drone_kp,
+                    dst=self._drone_dst,
+                    total_events=total_ev,
+                )
 
     @QtCore.pyqtSlot(object)
     def _on_geomag_updated(self, info: dict) -> None:
@@ -2148,12 +2154,14 @@ class MainWindow(QtWidgets.QMainWindow):
         if hasattr(self, "_osc_bridge") and self._osc_bridge.enabled:
             _ms = getattr(self, "_drone_last_max_score", 0.0)
             _ev = getattr(self, "_drone_eq_count_24h", 0)
-            self._osc_bridge.send_drone_state(
-                max_score=_ms, kp=kp, dst=dst, total_events=_ev,
-            )
-            self._osc_bridge.send_resonator_state(
-                max_score=_ms, kp=kp, dst=dst, total_events=_ev,
-            )
+            if self._synth_mode in ("both", "drone"):
+                self._osc_bridge.send_drone_state(
+                    max_score=_ms, kp=kp, dst=dst, total_events=_ev,
+                )
+            if self._synth_mode in ("both", "resonator"):
+                self._osc_bridge.send_resonator_state(
+                    max_score=_ms, kp=kp, dst=dst, total_events=_ev,
+                )
 
         # Color code by storm level
         storm_colors = {
@@ -2550,6 +2558,15 @@ class MainWindow(QtWidgets.QMainWindow):
 # ---------------------------------------------------------------------------
 
 def main():
+    parser = argparse.ArgumentParser(description="S.A.R. — Seismic Activity & Radio")
+    parser.add_argument(
+        "--synth",
+        choices=["both", "drone", "resonator"],
+        default="both",
+        help="Which SuperCollider synth(s) to launch: both, drone, or resonator (default: both)",
+    )
+    args, remaining = parser.parse_known_args()
+
     logging.basicConfig(
         level=logging.DEBUG,
         format="%(asctime)s [%(levelname)s] %(message)s",
@@ -2559,6 +2576,7 @@ def main():
     pg.setConfigOption("background", "#000000")    # black like SDR#
     pg.setConfigOption("foreground", "#a0b8d0")
 
+    sys.argv = sys.argv[:1] + remaining
     app = QtWidgets.QApplication(sys.argv)
     app.setStyle("Fusion")
 
@@ -2574,7 +2592,8 @@ def main():
     palette.setColor(QtGui.QPalette.Highlight, QtGui.QColor("#00ccff"))
     app.setPalette(palette)
 
-    win = MainWindow()
+    log.info("Synth mode: %s", args.synth)
+    win = MainWindow(synth_mode=args.synth)
     win.showFullScreen()
 
     # ── Graceful Ctrl+C / SIGTERM shutdown ──

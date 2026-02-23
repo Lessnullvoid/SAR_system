@@ -296,9 +296,18 @@ _SCLANG_PATHS_MAC = [
     os.path.expanduser("~/Applications/SuperCollider.app/Contents/MacOS/sclang"),
 ]
 
-_MAIN_SCD = str(
-    Path(__file__).resolve().parent.parent.parent / "supercollider" / "sar_main.scd"
-)
+_SC_DIR = Path(__file__).resolve().parent.parent.parent / "supercollider"
+_MAIN_SCD = str(_SC_DIR / "sar_main.scd")
+_DRONE_SCD = str(_SC_DIR / "sar_drone.scd")
+_RESONATOR_SCD = str(_SC_DIR / "sar_resonator.scd")
+
+def get_scd_path(synth_mode: str = "both") -> str:
+    """Return the SCD file path for the requested synth mode."""
+    if synth_mode == "drone":
+        return _DRONE_SCD
+    elif synth_mode == "resonator":
+        return _RESONATOR_SCD
+    return _MAIN_SCD
 
 
 def _find_sclang() -> Optional[str]:
