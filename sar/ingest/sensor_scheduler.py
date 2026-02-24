@@ -52,6 +52,9 @@ from .ice_client import (
     ICEArticle, fetch_ice_news, backfill_historical, is_backfill_complete,
     download_all_images, save_articles, load_articles,
 )
+from .history_client import (
+    HistoryEvent, load_history_events, download_history_images,
+)
 from .census_client import fetch_census_data, CountyDemographics
 from .native_land_client import get_saf_territories, IndigenousTerritory
 from .scedc_client import fetch_scedc_events, SCEDCEvent
@@ -86,6 +89,7 @@ class SensorScheduler(QtCore.QObject):
     gnss_updated = QtCore.pyqtSignal(object)         # dict
     weather_updated = QtCore.pyqtSignal(object)      # dict
     news_updated = QtCore.pyqtSignal(object)         # dict[str, list[ICEArticle]]
+    history_updated = QtCore.pyqtSignal(object)      # list[HistoryEvent]
     social_updated = QtCore.pyqtSignal(object)       # dict with census, territories, scedc
     status_message = QtCore.pyqtSignal(str)
 
@@ -154,12 +158,14 @@ class SensorScheduler(QtCore.QObject):
         if _IS_PI:
             # Pi: stagger network fetches more aggressively to keep
             # CPU/bandwidth free for the SDR audio pipeline.
+            QtCore.QTimer.singleShot(3000, self._poll_history)
             QtCore.QTimer.singleShot(5000, self._poll_news)
             QtCore.QTimer.singleShot(30000, self._poll_gnss)
             QtCore.QTimer.singleShot(20000, self._poll_weather)
             QtCore.QTimer.singleShot(25000, self._poll_social)
         else:
             # Desktop: faster initial data load
+            QtCore.QTimer.singleShot(1000, self._poll_history)
             QtCore.QTimer.singleShot(2000, self._poll_news)
             QtCore.QTimer.singleShot(5000, self._poll_gnss)
             QtCore.QTimer.singleShot(8000, self._poll_weather)
@@ -573,6 +579,26 @@ class SensorScheduler(QtCore.QObject):
 
     # ── Social data (Census + Native Land + SCEDC) ─────────────────
 
+    def _poll_history(self) -> None:
+        threading.Thread(
+            target=self._fetch_history, daemon=True, name="history-poll"
+        ).start()
+
+    def _fetch_history(self) -> None:
+        """Load static historical events and download their images (one-shot)."""
+        try:
+            events = load_history_events()
+            if not events:
+                return
+            events = download_history_images(events)
+            QtCore.QMetaObject.invokeMethod(
+                self, "_emit_history",
+                QtCore.Qt.QueuedConnection,
+                QtCore.Q_ARG(object, events),
+            )
+        except Exception as exc:
+            log.error("History data load error: %s", exc)
+
     def _poll_social(self) -> None:
         threading.Thread(
             target=self._fetch_social, daemon=True, name="social-poll"
@@ -657,6 +683,14 @@ class SensorScheduler(QtCore.QObject):
         tiles = summary.get("tile_count", 0)
         self.status_message.emit(
             f"News: {total} articles, {with_img} images, {tiles} tiles"
+        )
+
+    @QtCore.pyqtSlot(object)
+    def _emit_history(self, events: list) -> None:
+        self.history_updated.emit(events)
+        with_img = sum(1 for e in events if e.image_path)
+        self.status_message.emit(
+            f"History: {len(events)} events, {with_img} images"
         )
 
     @QtCore.pyqtSlot(object)

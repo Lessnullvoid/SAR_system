@@ -124,6 +124,14 @@ class TileItem(QtWidgets.QGraphicsObject):
         self._news_images_loaded = False   # True after all news pixmaps loaded
         self._sat_loaded = False         # True once we attempted to load sat image
 
+        # History overlay data (social-history events)
+        self._history_events: list = []
+        self._history_image_paths: list = []
+        self._history_pixmaps: list = []
+        self._history_pixmap_idx: int = 0
+        self._pixmap_history: Optional[QtGui.QPixmap] = None
+        self._history_images_loaded = False
+
         self.setAcceptHoverEvents(True)
         self.setCursor(QtCore.Qt.PointingHandCursor)
         self.setToolTip(
@@ -146,6 +154,9 @@ class TileItem(QtWidgets.QGraphicsObject):
         if selected and self._pixmap_news:
             src = QtCore.QRectF(self._pixmap_news.rect())
             painter.drawPixmap(r, self._pixmap_news, src)
+        elif selected and self._pixmap_history:
+            src = QtCore.QRectF(self._pixmap_history.rect())
+            painter.drawPixmap(r, self._pixmap_history, src)
         elif self._pixmap_sat:
             src = QtCore.QRectF(self._pixmap_sat.rect())
             painter.drawPixmap(r, self._pixmap_sat, src)
@@ -180,6 +191,10 @@ class TileItem(QtWidgets.QGraphicsObject):
         if self._news_articles:
             self._draw_news_indicator(painter, r)
 
+        # ── Layer 4: History indicator — amber diamond at any zoom ──
+        if self._history_events:
+            self._draw_history_indicator(painter, r)
+
     def _draw_news_indicator(self, painter: QtGui.QPainter, r: QtCore.QRectF) -> None:
         """Draw a visible NEWS marker in the corner of tiles with news."""
         painter.save()
@@ -201,6 +216,86 @@ class TileItem(QtWidgets.QGraphicsObject):
         painter.setFont(font)
         painter.drawText(marker_r, QtCore.Qt.AlignCenter, "N")
         painter.restore()
+
+    def _draw_history_indicator(self, painter: QtGui.QPainter, r: QtCore.QRectF) -> None:
+        """Draw an amber diamond marker in the bottom-right corner of tiles with history."""
+        painter.save()
+        sz = min(r.width(), r.height()) * 0.2
+        cx = r.right() - sz * 0.6 - r.width() * 0.05
+        cy = r.bottom() - sz * 0.6 - r.height() * 0.05
+        half = sz * 0.5
+        diamond = QtGui.QPolygonF([
+            QtCore.QPointF(cx, cy - half),
+            QtCore.QPointF(cx + half, cy),
+            QtCore.QPointF(cx, cy + half),
+            QtCore.QPointF(cx - half, cy),
+        ])
+        painter.setPen(QtCore.Qt.NoPen)
+        painter.setBrush(QtGui.QColor(220, 170, 30, 200))
+        painter.drawPolygon(diamond)
+        painter.setPen(QtGui.QColor(0, 0, 0))
+        font = painter.font()
+        font.setPointSizeF(max(0.5, sz * 0.4))
+        font.setBold(True)
+        painter.setFont(font)
+        painter.drawText(
+            QtCore.QRectF(cx - half, cy - half, sz, sz),
+            QtCore.Qt.AlignCenter, "H",
+        )
+        painter.restore()
+
+    def set_history_data(self, events: list) -> None:
+        """Assign social-history events to this tile."""
+        self._history_events = list(events)
+        self._history_image_paths = [
+            e.image_path for e in events if e.image_path
+        ]
+        self._history_pixmaps = []
+        self._history_pixmap_idx = 0
+        self._history_images_loaded = False
+
+        if self._history_image_paths:
+            pm = QtGui.QPixmap(self._history_image_paths[0])
+            if not pm.isNull():
+                _pi_max = 256 if _IS_PI else 512
+                if pm.width() > _pi_max or pm.height() > _pi_max:
+                    pm = pm.scaled(_pi_max, _pi_max, QtCore.Qt.KeepAspectRatio,
+                                   QtCore.Qt.SmoothTransformation)
+                self._history_pixmaps.append(pm)
+            self._pixmap_history = self._history_pixmaps[0] if self._history_pixmaps else None
+        else:
+            self._pixmap_history = None
+        self.update()
+
+    def _ensure_all_history_pixmaps(self) -> None:
+        """Lazily load remaining history pixmaps when scanner visits."""
+        if self._history_images_loaded:
+            return
+        self._history_images_loaded = True
+        if len(self._history_image_paths) <= 1:
+            return
+        for path in self._history_image_paths[1:]:
+            pm = QtGui.QPixmap(path)
+            if not pm.isNull():
+                _pi_max = 256 if _IS_PI else 512
+                if pm.width() > _pi_max or pm.height() > _pi_max:
+                    pm = pm.scaled(_pi_max, _pi_max, QtCore.Qt.KeepAspectRatio,
+                                   QtCore.Qt.SmoothTransformation)
+                self._history_pixmaps.append(pm)
+
+    def advance_history_image(self) -> bool:
+        """Advance to the next history image. Returns True if there are more."""
+        self._ensure_all_history_pixmaps()
+        if len(self._history_pixmaps) <= 1:
+            return False
+        self._history_pixmap_idx = (self._history_pixmap_idx + 1) % len(self._history_pixmaps)
+        self._pixmap_history = self._history_pixmaps[self._history_pixmap_idx]
+        self.update()
+        return True
+
+    @property
+    def history_image_count(self) -> int:
+        return len(self._history_pixmaps)
 
     def set_quake_data(self, count: int, max_mag: float) -> None:
         """Update earthquake count and max magnitude for this tile."""
@@ -429,8 +524,11 @@ class MapScanner(QtCore.QObject):
         self._tile_scores: Dict[str, float] = {}
         self._pending_scores: Dict[str, float] = {}
         self._news_tile_ids: set = set()
+        self._history_tile_ids: set = set()
         self._news_overlay: Optional[QtWidgets.QGraphicsPixmapItem] = None
         self._news_border: Optional[QtWidgets.QGraphicsRectItem] = None
+        self._history_overlay: Optional[QtWidgets.QGraphicsPixmapItem] = None
+        self._history_border: Optional[QtWidgets.QGraphicsRectItem] = None
 
         # Animation state
         self._anim_start_time = 0.0
@@ -460,6 +558,7 @@ class MapScanner(QtCore.QObject):
         self._anim_timer.stop()
         self._scan_timer.stop()
         self._remove_news_overlay()
+        self._remove_history_overlay()
         if self._current_tile_id:
             item = self._map._tile_items.get(self._current_tile_id)
             if item:
@@ -483,10 +582,16 @@ class MapScanner(QtCore.QObject):
         self._news_tile_ids = set(tile_ids)
         log.info("MapScanner: %d news tiles registered", len(tile_ids))
 
+    def update_history_tiles(self, tile_ids: set) -> None:
+        self._history_tile_ids = set(tile_ids)
+        log.info("MapScanner: %d history tiles registered", len(tile_ids))
+
     # ── Dwell time ────────────────────────────────────────────────────
 
     def _dwell_for_tile(self, tile_id: str) -> int:
         if tile_id in self._news_tile_ids:
+            return self._DWELL_NEWS_MS
+        if tile_id in self._history_tile_ids:
             return self._DWELL_NEWS_MS
         count = self._quake_counts.get(tile_id, 0)
         score = self._tile_scores.get(tile_id, 0.0)
@@ -546,12 +651,13 @@ class MapScanner(QtCore.QObject):
             if item.tile.on_fault:
                 fault_info[tid] = item.tile.fault_distance_km
 
-        # Active tiles (seismic activity, high score, or news)
+        # Active tiles (seismic activity, high score, news, or history)
         active_set: set = set()
         for tid in fault_info:
             if scores.get(tid, 0) > 0.01 or self._quake_counts.get(tid, 0) > 0:
                 active_set.add(tid)
         active_set.update(self._news_tile_ids & fault_info.keys())
+        active_set.update(self._history_tile_ids & fault_info.keys())
 
         # ── Cluster active tiles by fault distance ──
         sorted_active = sorted(active_set, key=lambda t: fault_info[t])
@@ -671,6 +777,55 @@ class MapScanner(QtCore.QObject):
         if item.news_image_count > 1:
             item.advance_news_image()
 
+    def _remove_history_overlay(self) -> None:
+        if self._history_overlay is not None:
+            self._map._scene.removeItem(self._history_overlay)
+            self._history_overlay = None
+        if self._history_border is not None:
+            self._map._scene.removeItem(self._history_border)
+            self._history_border = None
+
+    def _show_history_overlay(self, tile_id: str) -> None:
+        """Place a history image overlay on the tile (amber border)."""
+        if not self._running:
+            return
+        self._remove_history_overlay()
+        item = self._map._tile_items.get(tile_id)
+        if not item or not item._pixmap_history:
+            log.debug("No history pixmap for tile %s", tile_id)
+            return
+        item._ensure_all_history_pixmaps()
+        pm = item._pixmap_history
+        if pm.width() <= 0 or pm.height() <= 0:
+            return
+
+        tile_r = item._rect
+        tw, th = tile_r.width(), tile_r.height()
+        sx, sy = tw / pm.width(), th / pm.height()
+
+        overlay = QtWidgets.QGraphicsPixmapItem(pm)
+        overlay.setPos(tile_r.x(), tile_r.y())
+        overlay.setTransform(QtGui.QTransform.fromScale(sx, sy))
+        overlay.setZValue(50)
+        overlay.setOpacity(1.0)
+        self._map._scene.addItem(overlay)
+        self._history_overlay = overlay
+
+        border = QtWidgets.QGraphicsRectItem(tile_r)
+        pen = QtGui.QPen(QtGui.QColor(220, 170, 30, 220))
+        pen.setWidthF(2.0)
+        pen.setCosmetic(True)
+        border.setPen(pen)
+        border.setBrush(QtGui.QBrush(QtCore.Qt.NoBrush))
+        border.setZValue(51)
+        self._map._scene.addItem(border)
+        self._history_border = border
+
+        log.debug("History overlay placed for %s: %.0f x %.0f scene units",
+                   tile_id, tw, th)
+        if item.history_image_count > 1:
+            item.advance_history_image()
+
     # ── Navigation state machine ──────────────────────────────────────
 
     def _next_position(self) -> None:
@@ -687,6 +842,7 @@ class MapScanner(QtCore.QObject):
             return
 
         self._remove_news_overlay()
+        self._remove_history_overlay()
         if self._current_tile_id:
             item = self._map._tile_items.get(self._current_tile_id)
             if item:
@@ -764,6 +920,7 @@ class MapScanner(QtCore.QObject):
         tile_rect = item._rect
         dwell_ms = self._dwell_for_tile(tile_id)
         is_news = tile_id in self._news_tile_ids
+        is_history = tile_id in self._history_tile_ids
 
         padding_close = max(tile_rect.width(), tile_rect.height()) * 2.0
         self._closeup_rect = tile_rect.adjusted(
@@ -771,7 +928,7 @@ class MapScanner(QtCore.QObject):
             padding_close, padding_close,
         )
 
-        is_quiet = (not is_news
+        is_quiet = (not is_news and not is_history
                     and self._quake_counts.get(tile_id, 0) == 0
                     and self._tile_scores.get(tile_id, 0.0) < 0.01)
 
@@ -782,6 +939,16 @@ class MapScanner(QtCore.QObject):
             QtCore.QTimer.singleShot(
                 int(self._anim_duration * 1000),
                 lambda tid=tile_id: self._show_news_overlay(tid),
+            )
+            self._scan_timer.start(int(self._anim_duration * 1000) + dwell_ms)
+
+        elif is_history:
+            self._regional_rect = self._closeup_rect
+            self._animate_to_rect(self._closeup_rect)
+            self._current_dwell_ms = dwell_ms
+            QtCore.QTimer.singleShot(
+                int(self._anim_duration * 1000),
+                lambda tid=tile_id: self._show_history_overlay(tid),
             )
             self._scan_timer.start(int(self._anim_duration * 1000) + dwell_ms)
 
@@ -1632,6 +1799,92 @@ class FaultMapWidget(QtWidgets.QWidget):
         total_articles = sum(len(v) for v in news_by_tile.values())
         log.info("News: distributed %d articles across %d tiles (%d with images)",
                  total_articles, len(news_by_tile), len(news_image_tiles))
+
+    def update_history_events(self, events) -> None:
+        """Place amber diamond markers for historical events and assign to tiles.
+
+        Parameters
+        ----------
+        events : list[HistoryEvent]
+            Each event has lat, lon, title, description, image_path, period, theme.
+        """
+        import pyproj
+
+        if not hasattr(self, "_history_markers"):
+            self._history_markers = []
+        for item in self._history_markers:
+            self._scene.removeItem(item)
+        self._history_markers.clear()
+
+        if not events:
+            return
+
+        tx = pyproj.Transformer.from_crs(
+            pyproj.CRS("EPSG:4326"), pyproj.CRS("EPSG:3310"), always_xy=True
+        )
+        sf = self.SCENE_SCALE
+
+        # Group events by tile for overlay assignment
+        tile_events: Dict[str, list] = {}
+
+        for ev in events:
+            try:
+                mx, my = tx.transform(ev.lon, ev.lat)
+            except Exception:
+                continue
+
+            sx = (mx - self._origin_x) * sf
+            sy = -(my - self._origin_y) * sf
+
+            # Find enclosing tile
+            best_tid = None
+            for tid, titem in self._tile_items.items():
+                if titem._rect.contains(sx, sy):
+                    best_tid = tid
+                    break
+
+            if best_tid:
+                tile_events.setdefault(best_tid, []).append(ev)
+
+            # Draw amber diamond marker on the scene
+            size = 6.0
+            diamond = QtGui.QPolygonF([
+                QtCore.QPointF(sx, sy - size),
+                QtCore.QPointF(sx + size, sy),
+                QtCore.QPointF(sx, sy + size),
+                QtCore.QPointF(sx - size, sy),
+            ])
+            marker = QtWidgets.QGraphicsPolygonItem(diamond)
+            pen = QtGui.QPen(QtGui.QColor(220, 170, 30, 200))
+            pen.setWidthF(0.5)
+            pen.setCosmetic(True)
+            marker.setPen(pen)
+            marker.setBrush(QtGui.QBrush(QtGui.QColor(220, 170, 30, 80)))
+            marker.setZValue(14)
+            marker.setToolTip(
+                f"{ev.title}\n"
+                f"{ev.city}, {ev.county}\n"
+                f"Date: {ev.date}\n"
+                f"Period: {ev.period}\n"
+                f"Theme: {ev.theme}"
+            )
+            self._scene.addItem(marker)
+            self._history_markers.append(marker)
+
+        # Assign events to tiles for overlay display
+        history_image_tiles = set()
+        for tid, evts in tile_events.items():
+            titem = self._tile_items.get(tid)
+            if titem:
+                titem.set_history_data(evts)
+                if titem._pixmap_history is not None:
+                    history_image_tiles.add(tid)
+
+        self._scanner.update_history_tiles(history_image_tiles)
+        log.info(
+            "History: %d events, %d markers, %d tiles with images",
+            len(events), len(self._history_markers), len(history_image_tiles),
+        )
 
     def set_info(self, text: str) -> None:
         self._info_label.setText(text)

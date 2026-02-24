@@ -1022,8 +1022,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self._top_tiles_list.setMaximumHeight(200)
         sensor_layout.addWidget(self._top_tiles_list)
 
-        # ICE News Feed
-        news_title = QtWidgets.QLabel("NEWS FEED — ICE ACTIVITY")
+        # News + History Feed
+        news_title = QtWidgets.QLabel("NEWS & HISTORY — SAF CORRIDOR")
         news_title.setStyleSheet(
             "color: #00ccff; font-size: 13px; font-family: 'Helvetica Neue'; padding: 2px;"
         )
@@ -1048,6 +1048,7 @@ class MainWindow(QtWidgets.QMainWindow):
             " font-family: 'Helvetica Neue Mono', monospace;"
         )
         sensor_layout.addWidget(self._news_feed_log)
+        self._history_events: list = []
 
         mid_tabs.addTab(sensor_panel, "Sensors")
 
@@ -1180,6 +1181,9 @@ class MainWindow(QtWidgets.QMainWindow):
             )
             self._sensor_scheduler.news_updated.connect(
                 self._on_news_updated
+            )
+            self._sensor_scheduler.history_updated.connect(
+                self._on_history_loaded
             )
             self._sensor_scheduler.social_updated.connect(
                 self._on_social_updated
@@ -2240,45 +2244,94 @@ class MainWindow(QtWidgets.QMainWindow):
         )
 
     @QtCore.pyqtSlot(object)
+    @QtCore.pyqtSlot(object)
+    def _on_history_loaded(self, events: list) -> None:
+        """Receive static historical events — store and push to map + feed."""
+        self._history_events = list(events)
+        if self._fault_map:
+            self._fault_map.update_history_events(events)
+        self._rebuild_news_feed()
+
     def _on_news_updated(self, news_by_tile: dict) -> None:
         """Update news feed display and push articles to the map."""
-        # Forward to map widget
         if self._fault_map:
             self._fault_map.update_news(news_by_tile)
 
-        # Gather all articles for the log
+        self._latest_news_by_tile = news_by_tile
+        self._rebuild_news_feed()
+
+    def _rebuild_news_feed(self) -> None:
+        """Merge GDELT news + historical events into a single feed."""
+        news_by_tile = getattr(self, "_latest_news_by_tile", {})
+
         all_articles = []
         for articles in news_by_tile.values():
             all_articles.extend(articles)
 
-        total = len(all_articles)
+        total_news = len(all_articles)
+        total_history = len(self._history_events)
         with_img = sum(1 for a in all_articles if a.local_image_path)
-        tile_count = len(news_by_tile)
+        hist_img = sum(1 for e in self._history_events if e.image_path)
 
-        # Summary label
         self._news_summary_label.setText(
-            f"News: <span style='color:#00ffff'>{total}</span> articles  |  "
-            f"{with_img} images  |  {tile_count} tiles"
+            f"News: <span style='color:#00ffff'>{total_news}</span> articles  |  "
+            f"History: <span style='color:#dcaa1e'>{total_history}</span> events  |  "
+            f"{with_img + hist_img} images"
         )
 
-        # Feed log — show most recent articles (newest first)
-        sorted_articles = sorted(
-            all_articles, key=lambda a: a.date, reverse=True
-        )
         html_parts = []
-        for a in sorted_articles[:30]:  # show up to 30
-            city_tag = f"<b>{a.city}</b>" if a.city else ""
-            img_tag = ' <span style="color:#00ffaa">[IMG]</span>' if a.local_image_path else ""
-            date_short = a.date[:10] if len(a.date) >= 10 else a.date
+
+        # GDELT news first (newest first, up to 10)
+        if all_articles:
             html_parts.append(
-                f'<div style="margin-bottom:4px; padding:2px 0; '
-                f'border-bottom:1px solid #1a2a3a;">'
-                f'<span style="color:#00ccff">{date_short}</span> '
-                f'<span style="color:#40a0d0">{city_tag}</span>'
-                f'{img_tag}<br>'
-                f'<span style="color:#c0d0e0">{a.title[:100]}</span>'
-                f'</div>'
+                '<div style="color:#00ccff; font-size:11px; font-weight:bold; '
+                'margin:4px 0 2px 0;">RECENT NEWS</div>'
             )
+            sorted_articles = sorted(
+                all_articles, key=lambda a: a.date, reverse=True
+            )
+            for a in sorted_articles[:10]:
+                city_tag = f"<b>{a.city}</b>" if a.city else ""
+                img_tag = ' <span style="color:#00ffaa">[IMG]</span>' if a.local_image_path else ""
+                date_short = a.date[:10] if len(a.date) >= 10 else a.date
+                html_parts.append(
+                    f'<div style="margin-bottom:4px; padding:2px 0 2px 6px; '
+                    f'border-left:3px solid #00ccff; border-bottom:1px solid #1a2a3a;">'
+                    f'<span style="color:#00ccff">{date_short}</span> '
+                    f'<span style="color:#40a0d0">{city_tag}</span>'
+                    f'{img_tag}<br>'
+                    f'<span style="color:#c0d0e0">{a.title[:100]}</span>'
+                    f'</div>'
+                )
+
+        # Historical events (sorted by date descending)
+        if self._history_events:
+            html_parts.append(
+                '<div style="color:#dcaa1e; font-size:11px; font-weight:bold; '
+                'margin:8px 0 2px 0;">SOCIAL HISTORY — SAF CORRIDOR</div>'
+            )
+            sorted_history = sorted(
+                self._history_events, key=lambda e: e.date, reverse=True
+            )
+            for ev in sorted_history:
+                img_tag = ' <span style="color:#dcaa1e">[IMG]</span>' if ev.image_path else ""
+                themes = " ".join(
+                    f'<span style="color:#b08820; font-size:9px;">[{t.strip()}]</span>'
+                    for t in ev.theme.split(",") if t.strip()
+                )
+                html_parts.append(
+                    f'<div style="margin-bottom:4px; padding:2px 0 2px 6px; '
+                    f'border-left:3px solid #dcaa1e; border-bottom:1px solid #1a2a3a;">'
+                    f'<span style="color:#dcaa1e">{ev.date[:10]}</span> '
+                    f'<span style="color:#b09040"><b>{ev.city}</b></span> '
+                    f'<span style="color:#8a7030; font-size:9px;">{ev.period}</span>'
+                    f'{img_tag}<br>'
+                    f'<span style="color:#c0d0e0">{ev.title}</span><br>'
+                    f'<span style="color:#8090a0; font-size:9px;">{ev.description[:150]}</span> '
+                    f'{themes}'
+                    f'</div>'
+                )
+
         self._news_feed_log.setHtml("".join(html_parts))
 
     def _on_social_updated(self, payload: dict) -> None:

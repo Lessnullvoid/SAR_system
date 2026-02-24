@@ -9,9 +9,10 @@ build/
 # Virtual environment
 .venv/
 
-# Data (generated at runtime — satellite tiles, DB, news images)
+# Data (generated at runtime — satellite tiles, DB, news/history images)
 data/sat_cache/
 data/news_cache/
+data/history_cache/
 data/seismo_em.db
 
 # OS
