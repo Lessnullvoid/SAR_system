@@ -4,14 +4,14 @@
 #
 # Install: copy sar.desktop to ~/.config/autostart/
 #   mkdir -p ~/.config/autostart
-#   cp ~/SAR/scripts/sar.desktop ~/.config/autostart/
+#   cp ~/SAR_system/scripts/sar.desktop ~/.config/autostart/
 
 sleep 5
 
 export DISPLAY=:0
 export XDG_RUNTIME_DIR="/run/user/$(id -u)"
 
-cd ~/SAR
+cd ~/SAR_system
 source .venv/bin/activate
 
 # Ensure USB sound card is default output

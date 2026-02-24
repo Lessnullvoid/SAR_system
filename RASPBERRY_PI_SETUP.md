@@ -136,14 +136,14 @@ You should hear "Front Left", "Front Right" from the USB card. Press `Ctrl+C` to
 
 ```bash
 cd ~
-git clone https://github.com/Lessnullvoid/SAR.git
-cd SAR
+git clone https://github.com/Lessnullvoid/SAR_system.git
+cd SAR_system
 ```
 
 If the repository is private, use a personal access token:
 
 ```bash
-git clone https://<YOUR_TOKEN>@github.com/Lessnullvoid/SAR.git
+git clone https://<YOUR_TOKEN>@github.com/Lessnullvoid/SAR_system.git
 ```
 
 ---
@@ -170,7 +170,7 @@ The `--system-site-packages` flag lets pip packages coexist with apt-installed o
 ## Step 7 — First Run
 
 ```bash
-cd ~/SAR
+cd ~/SAR_system
 source .venv/bin/activate
 python -m python_app.gui_main
 ```
@@ -198,14 +198,14 @@ If the RTL-SDR dongle is not connected, the system still runs with map, sensors,
 Pull the latest code:
 
 ```bash
-cd ~/SAR
+cd ~/SAR_system
 git pull
 ```
 
 If satellite tiles need to be re-downloaded (e.g. resolution change):
 
 ```bash
-rm ~/SAR/data/sat_cache/SAF_*.png
+rm ~/SAR_system/data/sat_cache/SAF_*.png
 ```
 
 Then restart the app and click **Satellite** again.
@@ -334,10 +334,10 @@ SAR can launch automatically when the Pi desktop loads.
 ### Install autostart
 
 ```bash
-cd ~/SAR && git pull
-chmod +x ~/SAR/scripts/sar_autostart.sh
+cd ~/SAR_system && git pull
+chmod +x ~/SAR_system/scripts/sar_autostart.sh
 mkdir -p ~/.config/autostart
-cp ~/SAR/scripts/sar.desktop ~/.config/autostart/
+cp ~/SAR_system/scripts/sar.desktop ~/.config/autostart/
 ```
 
 Reboot to test:

@@ -2,6 +2,6 @@
 Type=Application
 Name=S.A.R System
 Comment=Seismic Activity Radio — fault corridor monitor
-Exec=/bin/bash /home/dragon/SAR/scripts/sar_autostart.sh
+Exec=/bin/bash /home/dragon/SAR_system/scripts/sar_autostart.sh
 Terminal=false
 X-GNOME-Autostart-enabled=true

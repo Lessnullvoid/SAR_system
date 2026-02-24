@@ -250,7 +250,7 @@ Tabs auto-rotate (ML → Sensors → Social → Audio), context-driven by scanne
 ## Running
 
 ```bash
-cd SAR
+cd SAR_system
 pip install -r requirements.txt
 python -m python_app.gui_main
 ```
@@ -338,8 +338,8 @@ speaker-test -c 2 -t wav
 #### 3. Clone and set up virtual environment
 
 ```bash
-git clone https://github.com/Lessnullvoid/SAR.git
-cd SAR
+git clone https://github.com/Lessnullvoid/SAR_system.git
+cd SAR_system
 python3 -m venv --system-site-packages .venv
 source .venv/bin/activate
 pip install pyrtlsdr sounddevice scikit-learn shapely pyproj requests python-osc
@@ -366,7 +366,7 @@ Log out and back in (or reboot) for the group change to take effect.
 #### 6. Run
 
 ```bash
-cd ~/SAR
+cd ~/SAR_system
 source .venv/bin/activate
 python -m python_app.gui_main                  # both synths (default)
 python -m python_app.gui_main --synth drone    # drone only
@@ -380,14 +380,14 @@ On first run, click the **Satellite** button in the map panel to download imager
 #### 7. Updating
 
 ```bash
-cd ~/SAR
+cd ~/SAR_system
 git pull
 ```
 
 If satellite tiles were re-downloaded at a different resolution, clear the cache:
 
 ```bash
-rm ~/SAR/data/sat_cache/SAF_*.png
+rm ~/SAR_system/data/sat_cache/SAF_*.png
 ```
 
 Then restart the app and click **Satellite** again.
