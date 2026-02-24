@@ -168,26 +168,13 @@ DEFAULT_SCAN_PLAN: List[ScanPosition] = [
     # subtle EM precursors.  FM remains available for MANUAL tuning as a
     # contextual reference and for debugging (see SAR_Core_Frequencies.md).
 
-    # ── Discone antenna (quadrature) ─────────────────────────────────
-
-    ScanPosition(
-        label="2m Ham",
-        center_hz=146_000_000,
-        antenna="discone",
-        mode="fm",
-        dwell_s=30,
-        band_name="2m",
-        priority=1,
-    ),
-    ScanPosition(
-        label="70cm",
-        center_hz=440_000_000,
-        antenna="discone",
-        mode="fm",
-        dwell_s=30,
-        band_name="70cm",
-        priority=2,
-    ),
+    # ── Discone / VHF-UHF ham bands — EXCLUDED from scanner ─────────
+    # 2m (146 MHz) and 70cm (440 MHz) use narrow-band FM, which:
+    #  - Produces dangerously loud audio spikes when a repeater or
+    #    operator transmits (can blow out the audio system).
+    #  - Suppresses amplitude and phase information, making it useless
+    #    for seismo-EM anomaly detection (same reason as FM broadcast).
+    # These bands remain defined in bands.py for manual tuning/debug.
 ]
 
 

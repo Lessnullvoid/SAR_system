@@ -24,9 +24,12 @@ import math
 import os
 import platform
 import time
-from typing import Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
 from pathlib import Path
+
+if TYPE_CHECKING:
+    from .narrative_engine import Chapter, NarrativeEngine, Shot
 
 from PyQt5 import QtCore, QtGui, QtWidgets
 
@@ -267,21 +270,48 @@ class TileItem(QtWidgets.QGraphicsObject):
             self._pixmap_history = None
         self.update()
 
+    _LAZY_HIST_BATCH = 3
+
     def _ensure_all_history_pixmaps(self) -> None:
-        """Lazily load remaining history pixmaps when scanner visits."""
+        """Lazily load remaining history pixmaps in small batches.
+
+        Same batched approach as news images to avoid holding the GIL
+        long enough to starve the SDR audio thread.
+        """
         if self._history_images_loaded:
             return
         self._history_images_loaded = True
         if len(self._history_image_paths) <= 1:
             return
-        for path in self._history_image_paths[1:]:
+        self._lazy_hist_idx = 1
+        self._lazy_hist_batch()
+
+    def _lazy_hist_batch(self) -> None:
+        end = min(
+            self._lazy_hist_idx + self._LAZY_HIST_BATCH,
+            len(self._history_image_paths),
+        )
+        for i in range(self._lazy_hist_idx, end):
+            path = self._history_image_paths[i]
             pm = QtGui.QPixmap(path)
             if not pm.isNull():
                 _pi_max = 256 if _IS_PI else 512
                 if pm.width() > _pi_max or pm.height() > _pi_max:
-                    pm = pm.scaled(_pi_max, _pi_max, QtCore.Qt.KeepAspectRatio,
-                                   QtCore.Qt.SmoothTransformation)
+                    pm = pm.scaled(
+                        _pi_max, _pi_max, QtCore.Qt.KeepAspectRatio,
+                        QtCore.Qt.SmoothTransformation,
+                    )
                 self._history_pixmaps.append(pm)
+        self._lazy_hist_idx = end
+        if end < len(self._history_image_paths):
+            QtCore.QTimer.singleShot(5, self._lazy_hist_batch)
+        else:
+            log.debug(
+                "Lazy-loaded %d/%d history images for %s",
+                len(self._history_pixmaps),
+                len(self._history_image_paths),
+                self.tile.tile_id,
+            )
 
     def advance_history_image(self) -> bool:
         """Advance to the next history image. Returns True if there are more."""
@@ -452,24 +482,11 @@ class TileItem(QtWidgets.QGraphicsObject):
 # ── Map auto-scanner ─────────────────────────────────────────────────
 
 class MapScanner(QtCore.QObject):
-    """Intelligent cluster-based navigator for the San Andreas Fault.
+    """Narrative-driven camera controller for the San Andreas Fault map.
 
-    Behaviour:
-      Phase 1 — Active area scan:
-        Tiles with seismic activity are grouped into geographic clusters.
-        The scanner visits the most important cluster first, zooming into
-        the regional area, scanning each active tile and its neighbours,
-        then zooming OUT to the full corridor before flying to the next
-        cluster (a different part of the map).
-
-      Phase 2 — Free navigation:
-        Once every active cluster has been covered, the scanner explores
-        the remaining quiet sectors along the fault, grouped into small
-        geographic batches so the camera covers distinct regions.
-
-      Rhythm:
-        corridor overview → cluster regional → tiles → corridor overview
-        → next cluster regional → tiles → … → free sectors → new sweep
+    Receives Shot sequences from a NarrativeEngine and executes them as
+    smooth camera animations with overlay placement.  The engine decides
+    *what* to show; the scanner decides *how* to show it.
 
     Signals
     -------
@@ -482,14 +499,6 @@ class MapScanner(QtCore.QObject):
     scanning_tile = QtCore.pyqtSignal(str)
     scan_overview = QtCore.pyqtSignal()
 
-    _DWELL_MIN_MS = 2000   # moderate-activity tile
-    _DWELL_MAX_MS = 6000   # very high activity / news
-    _DWELL_QUIET_MS = 1200 # quick glance at quiet tiles
-    _DWELL_NEWS_MS = 4500  # news images need time to be seen
-    _CLUSTER_GAP_KM = 30   # fault-km gap that splits clusters apart
-    _NEIGHBOR_KM = 15      # include neighbours within this radius
-    _FREE_SECTOR_SIZE = 12 # tiles per free-navigation sector
-
     def __init__(
         self,
         map_widget: "FaultMapWidget",
@@ -501,61 +510,70 @@ class MapScanner(QtCore.QObject):
         self._overview_ms = int(overview_s * 1000)
         self._running = False
 
+        # Narrative engine (created on start)
+        self._engine: Optional["NarrativeEngine"] = None
+        self._engine_initialized = False
+
         # Animation
         self._anim_timer = QtCore.QTimer(self)
         self._anim_timer.setInterval(33 if _IS_PI else 16)
         self._anim_timer.timeout.connect(self._animate_step)
 
-        # Scan cycle timer
+        # Shot timer — fires when the current shot's hold time expires
         self._scan_timer = QtCore.QTimer(self)
         self._scan_timer.setSingleShot(True)
-        self._scan_timer.timeout.connect(self._next_position)
+        self._scan_timer.timeout.connect(self._advance_shot)
 
-        # Group-based navigation state
-        self._groups: List[Dict] = []      # {"tiles": [...], "rect": QRectF, "label": str}
-        self._group_idx = 0                # which group we're in
-        self._tile_in_group = 0            # position within current group
-        self._group_entered = False        # have we shown the regional view?
         self._phase = "idle"
         self._current_tile_id: Optional[str] = None
 
-        # Sensor data caches
-        self._quake_counts: Dict[str, int] = {}
-        self._tile_scores: Dict[str, float] = {}
-        self._pending_scores: Dict[str, float] = {}
-        self._news_tile_ids: set = set()
-        self._history_tile_ids: set = set()
+        # Current chapter state
+        self._current_chapter: Optional["Chapter"] = None
+        self._shot_idx = 0
+
+        # Overlay graphics items
         self._news_overlay: Optional[QtWidgets.QGraphicsPixmapItem] = None
         self._news_border: Optional[QtWidgets.QGraphicsRectItem] = None
         self._history_overlay: Optional[QtWidgets.QGraphicsPixmapItem] = None
         self._history_border: Optional[QtWidgets.QGraphicsRectItem] = None
 
-        # Sweep counter for alternating geological / social rounds
-        # Start at 1 so the first round is social (images show immediately)
-        self._sweep_count: int = 1
-
         # Animation state
         self._anim_start_time = 0.0
-        self._anim_duration = 0.7  # seconds
+        self._anim_duration = 0.7
         self._anim_from_rect: Optional[QtCore.QRectF] = None
         self._anim_to_rect: Optional[QtCore.QRectF] = None
-        self._regional_rect: Optional[QtCore.QRectF] = None
-        self._closeup_rect: Optional[QtCore.QRectF] = None
+
+        # Sensor data caches (forwarded to engine)
+        self._news_tile_ids: set = set()
+        self._history_tile_ids: set = set()
+
+    def _ensure_engine(self) -> "NarrativeEngine":
+        from .narrative_engine import NarrativeEngine
+        if self._engine is None:
+            self._engine = NarrativeEngine()
+        if not self._engine_initialized and self._map._tile_items:
+            fault_tiles = []
+            fault_km: Dict[str, float] = {}
+            sections: Dict[str, str] = {}
+            for tid, item in self._map._tile_items.items():
+                if item.tile.on_fault:
+                    fault_tiles.append(tid)
+                    fault_km[tid] = item.tile.fault_distance_km
+                    sections[tid] = item.tile.section
+            fault_tiles.sort(key=lambda t: fault_km[t])
+            self._engine.set_tile_info(fault_tiles, fault_km, sections)
+            self._engine_initialized = True
+            log.info("NarrativeEngine initialized with %d fault tiles", len(fault_tiles))
+        return self._engine
 
     def start(self) -> None:
         if self._running:
             return
         self._running = True
-        self._tile_scores = {}
-        self._pending_scores = {}
-        self._rebuild_queue()
-        self._group_idx = 0
-        self._tile_in_group = 0
-        self._group_entered = False
+        self._ensure_engine()
         self._phase = "overview"
         self._scan_timer.start(1500)
-        n_tiles = sum(len(g["tiles"]) for g in self._groups)
-        log.info("MapScanner started — %d groups, %d tiles", len(self._groups), n_tiles)
+        log.info("MapScanner started (narrative mode)")
 
     def stop(self) -> None:
         self._running = False
@@ -568,6 +586,7 @@ class MapScanner(QtCore.QObject):
             if item:
                 item.set_scanner_focus(False)
         self._current_tile_id = None
+        self._current_chapter = None
         self._phase = "idle"
         log.info("MapScanner stopped")
 
@@ -575,41 +594,59 @@ class MapScanner(QtCore.QObject):
     def is_running(self) -> bool:
         return self._running
 
+    # ── Data updates (forwarded to engine) ────────────────────────────
+
     def update_scores(self, scores: Dict[str, float]) -> None:
-        """Store for next sweep rebuild (never mid-sweep)."""
-        self._pending_scores = dict(scores)
+        eng = self._ensure_engine()
+        eng.update_scores(scores)
 
     def update_quake_counts(self, counts: Dict[str, int]) -> None:
-        self._quake_counts = dict(counts)
+        eng = self._ensure_engine()
+        eng.update_quake_counts(counts)
 
     def update_news_tiles(self, tile_ids: set) -> None:
         self._news_tile_ids = set(tile_ids)
+        eng = self._ensure_engine()
+        img_set = set()
+        for tid in tile_ids:
+            item = self._map._tile_items.get(tid)
+            if item and item._pixmap_news:
+                img_set.add(tid)
+        eng.update_news_tiles(tile_ids, img_set)
         log.info("MapScanner: %d news tiles registered", len(tile_ids))
 
     def update_history_tiles(self, tile_ids: set) -> None:
         self._history_tile_ids = set(tile_ids)
+        eng = self._ensure_engine()
+        img_set = set()
+        theme_counts: Dict[str, int] = {}
+        for tid in tile_ids:
+            item = self._map._tile_items.get(tid)
+            if item:
+                if item._pixmap_history:
+                    img_set.add(tid)
+                themes = set()
+                for ev in item._history_events:
+                    for t in ev.theme.split(","):
+                        t = t.strip()
+                        if t:
+                            themes.add(t)
+                theme_counts[tid] = len(themes)
+        eng.update_history_tiles(tile_ids, img_set, theme_counts)
         log.info("MapScanner: %d history tiles registered", len(tile_ids))
 
-    # ── Dwell time ────────────────────────────────────────────────────
+    def queue_anomaly_alert(self, tile_ids: list) -> None:
+        """Called by GUI when ML detects an anomaly."""
+        eng = self._ensure_engine()
+        eng.queue_anomaly_alert(tile_ids)
 
-    def _dwell_for_tile(self, tile_id: str) -> int:
-        if self._is_social_round:
-            if tile_id in self._news_tile_ids:
-                return self._DWELL_NEWS_MS
-            if tile_id in self._history_tile_ids:
-                return self._DWELL_NEWS_MS
-        count = self._quake_counts.get(tile_id, 0)
-        score = self._tile_scores.get(tile_id, 0.0)
-        if count == 0 and score < 0.01:
-            return self._DWELL_QUIET_MS
-        importance = max(count / 20.0, score)
-        t = min(importance, 1.0)
-        return int(self._DWELL_MIN_MS + t * (self._DWELL_MAX_MS - self._DWELL_MIN_MS))
+    # ── Geometry helpers ──────────────────────────────────────────────
 
-    # ── Queue building ────────────────────────────────────────────────
+    def _tile_rect(self, tile_id: str) -> Optional[QtCore.QRectF]:
+        item = self._map._tile_items.get(tile_id)
+        return item._rect if item else None
 
-    def _group_bounding_rect(self, tile_ids: List[str]) -> QtCore.QRectF:
-        """Compute a padded bounding rect for a group of tiles."""
+    def _bounding_rect(self, tile_ids: List[str]) -> QtCore.QRectF:
         rects = []
         for tid in tile_ids:
             item = self._map._tile_items.get(tid)
@@ -628,18 +665,12 @@ class MapScanner(QtCore.QObject):
             (x_max - x_min) + 2 * pw, (y_max - y_min) + 2 * ph,
         )
 
-    @property
-    def _is_social_round(self) -> bool:
-        return self._sweep_count % 2 == 1
-
     def _multi_tile_rect(self, tile_id: str, pm: QtGui.QPixmap) -> QtCore.QRectF:
         """Return a scene rect spanning multiple tiles around *tile_id*.
 
-        Span is chosen by image aspect ratio:
-          landscape  → 3 cols x 2 rows (6 tiles)
-          portrait   → 2 cols x 3 rows (6 tiles)
-          square-ish → 2 cols x 2 rows (4 tiles)
-        Falls back to the single tile rect if neighbours are unavailable.
+        Square images always span at least 2x2 (4 tiles).  If some
+        neighbor tiles are missing at grid edges, the rect is still
+        sized to the intended span using the anchor tile dimensions.
         """
         anchor = self._map._tile_items.get(tile_id)
         if not anchor:
@@ -655,10 +686,10 @@ class MapScanner(QtCore.QObject):
 
         row0 = anchor.tile.row
         col0 = anchor.tile.col
+        tw = anchor._rect.width()
+        th = anchor._rect.height()
 
-        rc_map: Dict[tuple, "TileItem"] = {}
-        for item in self._map._tile_items.values():
-            rc_map[(item.tile.row, item.tile.col)] = item
+        rc_map = self._map._get_rc_map()
 
         rects: list = []
         for dr in range(span_r):
@@ -667,157 +698,21 @@ class MapScanner(QtCore.QObject):
                 if nb:
                     rects.append(nb._rect)
 
-        if len(rects) < 2:
-            return anchor._rect
+        if rects:
+            x_min = min(r.x() for r in rects)
+            y_min = min(r.y() for r in rects)
+            x_max = max(r.x() + r.width() for r in rects)
+            y_max = max(r.y() + r.height() for r in rects)
+            w = max(x_max - x_min, tw * span_c)
+            h = max(y_max - y_min, th * span_r)
+            return QtCore.QRectF(x_min, y_min, w, h)
 
-        x_min = min(r.x() for r in rects)
-        y_min = min(r.y() for r in rects)
-        x_max = max(r.x() + r.width() for r in rects)
-        y_max = max(r.y() + r.height() for r in rects)
-        return QtCore.QRectF(x_min, y_min, x_max - x_min, y_max - y_min)
-
-    def _rebuild_queue(self) -> None:
-        """Build a dynamic scan queue that changes every sweep.
-
-        Geological rounds — full corridor walk:
-          All on-fault tiles sorted by fault distance.  Direction alternates
-          N→S / S→N each geological sweep.  Active tiles get longer dwell;
-          quiet tiles are quick fly-overs.
-
-        Social rounds — image showcase:
-          Only tiles that have news or history images.  Scattered across the
-          corridor so the scanner jumps between different geographic areas,
-          displaying each image overlay at full dwell.
-
-        Both round types rotate the starting offset so the scanner enters
-        the corridor from a different section each time.
-        """
-        import random
-
-        scores: Dict[str, float] = {}
-        for tid, item in self._map._tile_items.items():
-            scores[tid] = item._score
-        if self._pending_scores:
-            scores.update(self._pending_scores)
-        self._tile_scores = scores
-
-        fault_info: Dict[str, float] = {}
-        for tid, item in self._map._tile_items.items():
-            if item.tile.on_fault:
-                fault_info[tid] = item.tile.fault_distance_km
-
-        if self._is_social_round:
-            self._build_social_queue(fault_info, scores)
-        else:
-            self._build_geological_queue(fault_info, scores)
-
-    def _build_geological_queue(
-        self, fault_info: Dict[str, float], scores: Dict[str, float]
-    ) -> None:
-        """Full corridor walk — every on-fault tile visited exactly once.
-
-        Alternates direction each geological sweep.  Splits into groups of
-        ~8 tiles so the scanner zooms out between sections, giving a sense
-        of traveling along the fault.
-        """
-        geo_sweep_idx = self._sweep_count // 2
-        reverse = (geo_sweep_idx % 2 == 1)
-
-        all_fault = sorted(fault_info.keys(), key=lambda t: fault_info[t],
-                           reverse=reverse)
-
-        # Rotate starting point so each sweep enters from a different area
-        if all_fault:
-            offset = (geo_sweep_idx * 7) % len(all_fault)
-            all_fault = all_fault[offset:] + all_fault[:offset]
-
-        sector_size = 8
-        groups: List[Dict] = []
-        for i in range(0, len(all_fault), sector_size):
-            sector = all_fault[i:i + sector_size]
-            # Within each sector, put active tiles first for emphasis
-            active = [t for t in sector
-                      if scores.get(t, 0) > 0.01
-                      or self._quake_counts.get(t, 0) > 0]
-            quiet = [t for t in sector if t not in set(active)]
-            ordered = active + quiet
-            label = "active" if active else "free"
-            groups.append({
-                "tiles": ordered,
-                "rect": self._group_bounding_rect(ordered),
-                "label": label,
-                "importance": 0,
-            })
-
-        self._groups = groups
-        n_tiles = sum(len(g["tiles"]) for g in groups)
-        direction = "S→N" if reverse else "N→S"
-        log.info(
-            "MapScanner queue [geological %s]: %d sectors, %d tiles",
-            direction, len(groups), n_tiles,
+        return QtCore.QRectF(
+            anchor._rect.x(), anchor._rect.y(),
+            tw * span_c, th * span_r,
         )
 
-    def _build_social_queue(
-        self, fault_info: Dict[str, float], scores: Dict[str, float]
-    ) -> None:
-        """Image showcase — only tiles with news or history content.
-
-        Tiles are spread geographically so the scanner jumps between
-        different areas of the corridor rather than clustering.  A few
-        seismically active tiles without images are interleaved to keep
-        the geological context alive.
-        """
-        import random
-
-        image_tiles = sorted(
-            (self._news_tile_ids | self._history_tile_ids) & fault_info.keys(),
-            key=lambda t: fault_info[t],
-        )
-
-        # Interleave a handful of high-activity tiles for geological context
-        seismic_only = sorted(
-            [t for t in fault_info
-             if t not in self._news_tile_ids
-             and t not in self._history_tile_ids
-             and (scores.get(t, 0) > 0.3
-                  or self._quake_counts.get(t, 0) >= 3)],
-            key=lambda t: -scores.get(t, 0),
-        )[:6]
-
-        combined = image_tiles + seismic_only
-        combined = sorted(set(combined), key=lambda t: fault_info[t])
-
-        social_sweep_idx = self._sweep_count // 2
-        if social_sweep_idx % 2 == 1:
-            combined.reverse()
-
-        # Shuffle in segments of 3 to add variety while keeping geographic flow
-        shuffled: list = []
-        for i in range(0, len(combined), 3):
-            chunk = combined[i:i + 3]
-            random.shuffle(chunk)
-            shuffled.extend(chunk)
-
-        # Build small groups (3-4 tiles) so the scanner zooms out frequently
-        groups: List[Dict] = []
-        group_size = 3
-        for i in range(0, len(shuffled), group_size):
-            sector = shuffled[i:i + group_size]
-            groups.append({
-                "tiles": sector,
-                "rect": self._group_bounding_rect(sector),
-                "label": "social",
-                "importance": 0,
-            })
-
-        self._groups = groups
-        n_tiles = sum(len(g["tiles"]) for g in groups)
-        log.info(
-            "MapScanner queue [social]: %d groups, %d tiles (%d image, %d seismic)",
-            len(groups), n_tiles, len(image_tiles), len(seismic_only),
-        )
-
-    # ── News overlay ──────────────────────────────────────────────────
+    # ── Overlay management ────────────────────────────────────────────
 
     def _remove_news_overlay(self) -> None:
         if self._news_overlay is not None:
@@ -828,13 +723,11 @@ class MapScanner(QtCore.QObject):
             self._news_border = None
 
     def _show_news_overlay(self, tile_id: str) -> None:
-        """Place a news image overlay spanning multiple tiles."""
         if not self._running:
             return
         self._remove_news_overlay()
         item = self._map._tile_items.get(tile_id)
         if not item or not item._pixmap_news:
-            log.debug("No news pixmap for tile %s", tile_id)
             return
         item._ensure_all_news_pixmaps()
         pm = item._pixmap_news
@@ -862,9 +755,6 @@ class MapScanner(QtCore.QObject):
         border.setZValue(51)
         self._map._scene.addItem(border)
         self._news_border = border
-
-        log.debug("News overlay placed for %s: %.0f x %.0f scene units",
-                   tile_id, tw, th)
         if item.news_image_count > 1:
             item.advance_news_image()
 
@@ -877,13 +767,11 @@ class MapScanner(QtCore.QObject):
             self._history_border = None
 
     def _show_history_overlay(self, tile_id: str) -> None:
-        """Place a history image overlay spanning multiple tiles (amber border)."""
         if not self._running:
             return
         self._remove_history_overlay()
         item = self._map._tile_items.get(tile_id)
         if not item or not item._pixmap_history:
-            log.debug("No history pixmap for tile %s", tile_id)
             return
         item._ensure_all_history_pixmaps()
         pm = item._pixmap_history
@@ -911,161 +799,151 @@ class MapScanner(QtCore.QObject):
         border.setZValue(51)
         self._map._scene.addItem(border)
         self._history_border = border
-
-        log.debug("History overlay placed for %s: %.0f x %.0f scene units",
-                   tile_id, tw, th)
         if item.history_image_count > 1:
             item.advance_history_image()
 
-    # ── Navigation state machine ──────────────────────────────────────
+    # ── Shot executor (narrative state machine) ───────────────────────
 
-    def _next_position(self) -> None:
-        """Advance to the next scan position.
-
-        State machine:
-          1. No groups / empty queue → rebuild
-          2. All groups done → zoom out to corridor overview, new sweep
-          3. Entering a new group → fly to its regional bounding rect
-          4. Group tiles exhausted → brief corridor fly-over, advance group
-          5. Otherwise → visit the next tile in the current group
-        """
+    def _advance_shot(self) -> None:
+        """Execute the next shot in the current chapter, or generate a new chapter."""
         if not self._running:
             return
 
+        # Clean up previous shot
         self._remove_news_overlay()
         self._remove_history_overlay()
         if self._current_tile_id:
             item = self._map._tile_items.get(self._current_tile_id)
             if item:
                 item.set_scanner_focus(False)
+            self._current_tile_id = None
 
-        # (1) Empty queue
-        if not self._groups:
-            self._rebuild_queue()
-            if not self._groups:
-                self._phase = "overview"
-                self._map.fit_to_view()
-                self.scan_overview.emit()
-                self._scan_timer.start(5000)
-                return
+        # Need a new chapter?
+        ch = self._current_chapter
+        if ch is None or self._shot_idx >= len(ch.shots):
+            self._begin_next_chapter()
+            return
 
-        # (2) All groups exhausted → new sweep
-        if self._group_idx >= len(self._groups):
-            self._group_idx = 0
-            self._tile_in_group = 0
-            self._group_entered = False
-            self._sweep_count += 1
-            self._rebuild_queue()
-            round_label = "social" if self._is_social_round else "geological"
-            log.info("MapScanner: sweep #%d complete — starting %s round",
-                     self._sweep_count, round_label)
-            self._phase = "overview"
+        shot = ch.shots[self._shot_idx]
+        self._shot_idx += 1
+        self._execute_shot(shot)
+
+    def _begin_next_chapter(self) -> None:
+        """Ask the narrative engine for the next chapter and start it."""
+        from .narrative_engine import Chapter
+        eng = self._ensure_engine()
+        ch = eng.next_chapter()
+        self._current_chapter = ch
+        self._shot_idx = 0
+
+        if not ch.shots:
+            self._scan_timer.start(2000)
+            return
+
+        shot = ch.shots[self._shot_idx]
+        self._shot_idx += 1
+        self._execute_shot(shot)
+
+    def _execute_shot(self, shot: "Shot") -> None:
+        """Execute a single Shot — animate camera and manage overlays."""
+        from .narrative_engine import ShotKind
+
+        self._anim_duration = shot.anim_s
+
+        if shot.kind == ShotKind.ESTABLISH:
+            self._phase = "establish"
+            ch = self._current_chapter
+            all_tiles = [ch.primary_tile] + ch.context_tiles if ch else []
+            if all_tiles:
+                target = self._bounding_rect(all_tiles)
+            else:
+                target = self._map._fault_rect
+            self._animate_to_rect(target)
+            self.scan_overview.emit()
+            self._scan_timer.start(shot.total_ms)
+
+        elif shot.kind == ShotKind.APPROACH:
+            self._phase = "approach"
+            tid = shot.tile_id
+            if tid:
+                tr = self._tile_rect(tid)
+                if tr:
+                    pad = max(tr.width(), tr.height()) * 3.0
+                    target = tr.adjusted(-pad, -pad, pad, pad)
+                    self._animate_to_rect(target)
+            self._scan_timer.start(shot.total_ms)
+
+        elif shot.kind == ShotKind.FOCUS:
+            self._phase = "focus"
+            tid = shot.tile_id
+            if tid:
+                item = self._map._tile_items.get(tid)
+                if item:
+                    self._current_tile_id = tid
+                    item.set_scanner_focus(True)
+                    self.scanning_tile.emit(tid)
+
+                    # Overlay placement
+                    if shot.overlay == "news":
+                        self._show_news_overlay(tid)
+                    elif shot.overlay == "history":
+                        self._show_history_overlay(tid)
+
+                    has_overlay = shot.overlay in ("news", "history")
+                    if has_overlay:
+                        pm = None
+                        if shot.overlay == "news" and item._pixmap_news:
+                            pm = item._pixmap_news
+                        elif shot.overlay == "history" and item._pixmap_history:
+                            pm = item._pixmap_history
+                        if pm:
+                            overlay_r = self._multi_tile_rect(tid, pm)
+                            pad = max(overlay_r.width(), overlay_r.height()) * 1.0
+                            target = overlay_r.adjusted(-pad, -pad, pad, pad)
+                        else:
+                            tr = item._rect
+                            pad = max(tr.width(), tr.height()) * 3.0
+                            target = tr.adjusted(-pad, -pad, pad, pad)
+                    else:
+                        tr = item._rect
+                        pad = max(tr.width(), tr.height()) * 2.0
+                        target = tr.adjusted(-pad, -pad, pad, pad)
+                    if shot.anim_s > 0:
+                        self._animate_to_rect(target)
+            self._scan_timer.start(shot.total_ms)
+
+        elif shot.kind == ShotKind.CONTEXT:
+            self._phase = "context"
+            tid = shot.tile_id
+            if tid:
+                item = self._map._tile_items.get(tid)
+                if item:
+                    if self._current_tile_id:
+                        prev = self._map._tile_items.get(self._current_tile_id)
+                        if prev:
+                            prev.set_scanner_focus(False)
+                    self._current_tile_id = tid
+                    item.set_scanner_focus(True)
+                    self.scanning_tile.emit(tid)
+
+                    tr = item._rect
+                    pad = max(tr.width(), tr.height()) * 2.0
+                    target = tr.adjusted(-pad, -pad, pad, pad)
+                    self._animate_to_rect(target)
+            self._scan_timer.start(shot.total_ms)
+
+        elif shot.kind == ShotKind.RELEASE:
+            self._phase = "release"
             self._animate_to_rect(self._map._fault_rect)
             self.scan_overview.emit()
-            self._scan_timer.start(self._overview_ms)
-            return
-
-        group = self._groups[self._group_idx]
-
-        # (3) Entering a new group → fly to its regional area
-        if not self._group_entered:
-            self._group_entered = True
-            self._phase = "regional"
-            self._animate_to_rect(group["rect"])
-            self.scan_overview.emit()
-            hold = 1200 if group["label"] in ("active", "social") else 800
-            self._scan_timer.start(int(self._anim_duration * 1000) + hold)
-            return
-
-        # (4) Current group exhausted → zoom out briefly, next group
-        if self._tile_in_group >= len(group["tiles"]):
-            self._group_idx += 1
-            self._tile_in_group = 0
-            self._group_entered = False
-            self._phase = "overview"
-            self._animate_to_rect(self._map._fault_rect)
-            self.scan_overview.emit()
-            corridor_hold = int(self._overview_ms * 0.5)
-            self._scan_timer.start(int(self._anim_duration * 1000) + corridor_hold)
-            return
-
-        # (5) Visit next tile
-        tile_id = group["tiles"][self._tile_in_group]
-        self._tile_in_group += 1
-        self._zoom_to_tile(tile_id)
-
-    def _zoom_to_tile(self, tile_id: str) -> None:
-        """Zoom into a specific tile."""
-        item = self._map._tile_items.get(tile_id)
-        if not item:
-            QtCore.QTimer.singleShot(0, self._next_position)
-            return
-
-        self._current_tile_id = tile_id
-        item.set_scanner_focus(True)
-        self.scanning_tile.emit(tile_id)
-        self._phase = "zoom_in"
-
-        tile_rect = item._rect
-        dwell_ms = self._dwell_for_tile(tile_id)
-        is_news = tile_id in self._news_tile_ids
-        is_history = tile_id in self._history_tile_ids
-        has_image = is_news or is_history
-        show_overlay = self._is_social_round and has_image
-
-        if show_overlay:
-            padding_close = max(tile_rect.width(), tile_rect.height()) * 4.0
-        else:
-            padding_close = max(tile_rect.width(), tile_rect.height()) * 2.0
-        self._closeup_rect = tile_rect.adjusted(
-            -padding_close, -padding_close,
-            padding_close, padding_close,
-        )
-
-        has_seismic = (self._quake_counts.get(tile_id, 0) > 0
-                       or self._tile_scores.get(tile_id, 0.0) >= 0.01)
-
-        if show_overlay and is_news:
-            self._regional_rect = self._closeup_rect
-            self._show_news_overlay(tile_id)
-            self._animate_to_rect(self._closeup_rect)
-            self._current_dwell_ms = dwell_ms
-            self._scan_timer.start(int(self._anim_duration * 1000) + dwell_ms)
-
-        elif show_overlay and is_history:
-            self._regional_rect = self._closeup_rect
-            self._show_history_overlay(tile_id)
-            self._animate_to_rect(self._closeup_rect)
-            self._current_dwell_ms = dwell_ms
-            self._scan_timer.start(int(self._anim_duration * 1000) + dwell_ms)
-
-        elif has_seismic:
-            padding_reg = max(tile_rect.width(), tile_rect.height()) * 4.0
-            self._regional_rect = tile_rect.adjusted(
-                -padding_reg, -padding_reg, padding_reg, padding_reg,
-            )
-            self._animate_to_rect(self._regional_rect)
-            self._current_dwell_ms = dwell_ms
-            phase1_ms = int(self._anim_duration * 1000) + dwell_ms
-            QtCore.QTimer.singleShot(phase1_ms, self._begin_closeup)
+            self._scan_timer.start(shot.total_ms)
 
         else:
-            self._regional_rect = self._closeup_rect
-            self._animate_to_rect(self._closeup_rect)
-            self._current_dwell_ms = dwell_ms
-            self._scan_timer.start(int(self._anim_duration * 1000) + dwell_ms)
+            self._scan_timer.start(1000)
 
-    def _begin_closeup(self) -> None:
-        """Phase 2: zoom deeper into the active tile."""
-        if not self._running or self._phase == "idle":
-            return
-        self._phase = "zoom_close"
-        self._animate_to_rect(self._closeup_rect)
-        dwell_ms = self._current_dwell_ms
-        self._scan_timer.start(int(self._anim_duration * 1000) + dwell_ms)
+    # ── Animation ─────────────────────────────────────────────────────
 
     def _animate_to_rect(self, target: QtCore.QRectF) -> None:
-        """Smoothly animate the view to a target rectangle."""
         self._anim_from_rect = self._map._view.mapToScene(
             self._map._view.viewport().rect()
         ).boundingRect()
@@ -1074,21 +952,19 @@ class MapScanner(QtCore.QObject):
         self._anim_timer.start()
 
     def _animate_step(self) -> None:
-        """One frame of the zoom animation."""
         if not self._anim_from_rect or not self._anim_to_rect:
             self._anim_timer.stop()
             return
 
         elapsed = time.time() - self._anim_start_time
-        t = min(elapsed / self._anim_duration, 1.0)
+        dur = max(self._anim_duration, 0.01)
+        t = min(elapsed / dur, 1.0)
 
-        # Ease in-out cubic
         if t < 0.5:
             ease = 4 * t * t * t
         else:
             ease = 1 - pow(-2 * t + 2, 3) / 2
 
-        # Interpolate rectangles
         f = self._anim_from_rect
         to = self._anim_to_rect
         x = f.x() + (to.x() - f.x()) * ease
@@ -1331,6 +1207,16 @@ class FaultMapWidget(QtWidgets.QWidget):
         log.info("Auto-starting map scanner")
         self._scanner.start()
         self._scan_label.setText("SCANNING — autonomous navigation active")
+
+    # ── Tile grid helpers ─────────────────────────────────────────────
+
+    def _get_rc_map(self) -> Dict[tuple, "TileItem"]:
+        """Cached (row, col) → TileItem lookup for multi-tile operations."""
+        if not hasattr(self, "_rc_map_cache") or self._rc_map_cache is None:
+            self._rc_map_cache: Dict[tuple, TileItem] = {}
+            for item in self._tile_items.values():
+                self._rc_map_cache[(item.tile.row, item.tile.col)] = item
+        return self._rc_map_cache
 
     # ── Scene construction ────────────────────────────────────────────
 
@@ -2062,23 +1948,32 @@ class FaultMapWidget(QtWidgets.QWidget):
         item = self._tile_items.get(tile_id)
         if item:
             t = item.tile
-            sc = self._scanner
-            g_idx = sc._group_idx + 1
-            g_total = len(sc._groups)
-            g_label = sc._groups[sc._group_idx]["label"] if sc._group_idx < g_total else "?"
+            eng = self._scanner._engine
+            ch = self._scanner._current_chapter
+            ch_type = ch.chapter_type.name if ch else "—"
+            if eng:
+                cyc = eng._cycle_count
+                prog = f"{eng._playlist_idx}/{len(eng._playlist)}"
+            else:
+                cyc, prog = 0, "0/0"
             qcount = item._quake_count
             self._scan_label.setText(
-                f"SCANNING [{g_label} {g_idx}/{g_total}] — {t.tile_id}  |  "
+                f"SCANNING [{ch_type}] C{cyc} {prog} — {t.tile_id}  |  "
                 f"{t.section}  |  score: {item._score:.3f}  |  quakes: {qcount}  |  "
                 f"lat {t.centroid_lonlat[1]:.2f}  lon {t.centroid_lonlat[0]:.2f}"
             )
 
     def _on_scanner_overview(self) -> None:
-        sc = self._scanner
-        g_idx = sc._group_idx
-        g_total = len(sc._groups)
+        eng = self._scanner._engine
+        ch = self._scanner._current_chapter
+        ch_type = ch.chapter_type.name if ch else "OVERVIEW"
+        if eng:
+            cyc = eng._cycle_count
+            prog = f"{eng._playlist_idx}/{len(eng._playlist)}"
+        else:
+            cyc, prog = 0, "0/0"
         self._scan_label.setText(
-            f"SCANNING — overview  [group {g_idx}/{g_total}]"
+            f"SCANNING — overview  [{ch_type}] C{cyc} {prog}"
         )
 
     # ── Satellite download ────────────────────────────────────────────
