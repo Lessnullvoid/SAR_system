@@ -1044,11 +1044,20 @@ class MainWindow(QtWidgets.QMainWindow):
         self._news_feed_log.setReadOnly(True)
         self._news_feed_log.setStyleSheet(
             "color: #80b0d0; background: #060a10; border: 1px solid #0c1a2e;"
-            " padding: 4px; font-size: 10px;"
-            " font-family: 'Helvetica Neue Mono', monospace;"
+            " padding: 6px; font-size: 11px;"
+            " font-family: 'Helvetica Neue', 'Segoe UI', sans-serif;"
         )
+        self._news_feed_log.setMouseTracking(True)
+        self._news_feed_log.installEventFilter(self)
         sensor_layout.addWidget(self._news_feed_log)
         self._history_events: list = []
+
+        # Auto-scroll timer for news feed
+        self._news_scroll_paused = False
+        self._news_scroll_timer = QtCore.QTimer(self)
+        self._news_scroll_timer.setInterval(120)
+        self._news_scroll_timer.timeout.connect(self._auto_scroll_news_tick)
+        self._news_scroll_timer.start()
 
         mid_tabs.addTab(sensor_panel, "Sensors")
 
@@ -1122,10 +1131,19 @@ class MainWindow(QtWidgets.QMainWindow):
         self._territory_log.setReadOnly(True)
         self._territory_log.setStyleSheet(
             "color: #80b0d0; background: #060a10; border: 1px solid #0c1a2e;"
-            " padding: 4px; font-size: 10px;"
-            " font-family: 'Helvetica Neue Mono', monospace;"
+            " padding: 6px; font-size: 11px;"
+            " font-family: 'Helvetica Neue', 'Segoe UI', sans-serif;"
         )
+        self._territory_log.setMouseTracking(True)
+        self._territory_log.installEventFilter(self)
         social_layout.addWidget(self._territory_log, 1)
+
+        # Auto-scroll timer for territory log
+        self._terr_scroll_paused = False
+        self._terr_scroll_timer = QtCore.QTimer(self)
+        self._terr_scroll_timer.setInterval(120)
+        self._terr_scroll_timer.timeout.connect(self._auto_scroll_terr_tick)
+        self._terr_scroll_timer.start()
 
         # SCEDC seismic section
         scedc_title = QtWidgets.QLabel("SCEDC — SO. CALIFORNIA SEISMICITY")
@@ -2260,13 +2278,32 @@ class MainWindow(QtWidgets.QMainWindow):
         self._latest_news_by_tile = news_by_tile
         self._rebuild_news_feed()
 
+    @staticmethod
+    def _normalize_title(title: str) -> str:
+        import re
+        return re.sub(r"[^a-z0-9 ]", "", title.lower()).strip()
+
     def _rebuild_news_feed(self) -> None:
         """Merge GDELT news + historical events into a single feed."""
         news_by_tile = getattr(self, "_latest_news_by_tile", {})
 
-        all_articles = []
+        raw_articles = []
         for articles in news_by_tile.values():
-            all_articles.extend(articles)
+            raw_articles.extend(articles)
+
+        # Deduplicate: first by URL, then by title prefix (first 50 chars)
+        by_url = {}
+        for a in raw_articles:
+            if a.url not in by_url:
+                by_url[a.url] = a
+        seen_prefixes: set = set()
+        all_articles = []
+        for a in by_url.values():
+            norm = self._normalize_title(a.title)[:50]
+            if norm in seen_prefixes:
+                continue
+            seen_prefixes.add(norm)
+            all_articles.append(a)
 
         total_news = len(all_articles)
         total_history = len(self._history_events)
@@ -2279,13 +2316,26 @@ class MainWindow(QtWidgets.QMainWindow):
             f"{with_img + hist_img} images"
         )
 
+        _box_news = (
+            'margin:0 0 6px 0; padding:8px 10px; '
+            'border-left:4px solid #00ccff; '
+            'background:#0a1520; '
+            'border-radius:3px;'
+        )
+        _box_hist = (
+            'margin:0 0 6px 0; padding:8px 10px; '
+            'border-left:4px solid #dcaa1e; '
+            'background:#12100a; '
+            'border-radius:3px;'
+        )
+
         html_parts = []
 
-        # GDELT news first (newest first, up to 10)
+        # GDELT news (newest first, up to 10)
         if all_articles:
             html_parts.append(
-                '<div style="color:#00ccff; font-size:11px; font-weight:bold; '
-                'margin:4px 0 2px 0;">RECENT NEWS</div>'
+                '<div style="color:#00ccff; font-size:14px; font-weight:bold; '
+                'margin:6px 0 4px 0; letter-spacing:1px;">RECENT NEWS</div>'
             )
             sorted_articles = sorted(
                 all_articles, key=lambda a: a.date, reverse=True
@@ -2295,20 +2345,21 @@ class MainWindow(QtWidgets.QMainWindow):
                 img_tag = ' <span style="color:#00ffaa">[IMG]</span>' if a.local_image_path else ""
                 date_short = a.date[:10] if len(a.date) >= 10 else a.date
                 html_parts.append(
-                    f'<div style="margin-bottom:4px; padding:2px 0 2px 6px; '
-                    f'border-left:3px solid #00ccff; border-bottom:1px solid #1a2a3a;">'
+                    f'<div style="{_box_news}">'
+                    f'<div style="font-size:13px; margin-bottom:3px;">'
                     f'<span style="color:#00ccff">{date_short}</span> '
                     f'<span style="color:#40a0d0">{city_tag}</span>'
-                    f'{img_tag}<br>'
-                    f'<span style="color:#c0d0e0">{a.title[:100]}</span>'
+                    f'{img_tag}</div>'
+                    f'<div style="font-size:13px; color:#d0e0f0; line-height:1.3;">'
+                    f'{a.title[:120]}</div>'
                     f'</div>'
                 )
 
         # Historical events (sorted by date descending)
         if self._history_events:
             html_parts.append(
-                '<div style="color:#dcaa1e; font-size:11px; font-weight:bold; '
-                'margin:8px 0 2px 0;">SOCIAL HISTORY — SAF CORRIDOR</div>'
+                '<div style="color:#dcaa1e; font-size:14px; font-weight:bold; '
+                'margin:10px 0 4px 0; letter-spacing:1px;">SOCIAL HISTORY — SAF CORRIDOR</div>'
             )
             sorted_history = sorted(
                 self._history_events, key=lambda e: e.date, reverse=True
@@ -2316,19 +2367,21 @@ class MainWindow(QtWidgets.QMainWindow):
             for ev in sorted_history:
                 img_tag = ' <span style="color:#dcaa1e">[IMG]</span>' if ev.image_path else ""
                 themes = " ".join(
-                    f'<span style="color:#b08820; font-size:9px;">[{t.strip()}]</span>'
+                    f'<span style="color:#b08820; font-size:11px;">[{t.strip()}]</span>'
                     for t in ev.theme.split(",") if t.strip()
                 )
                 html_parts.append(
-                    f'<div style="margin-bottom:4px; padding:2px 0 2px 6px; '
-                    f'border-left:3px solid #dcaa1e; border-bottom:1px solid #1a2a3a;">'
+                    f'<div style="{_box_hist}">'
+                    f'<div style="font-size:13px; margin-bottom:2px;">'
                     f'<span style="color:#dcaa1e">{ev.date[:10]}</span> '
                     f'<span style="color:#b09040"><b>{ev.city}</b></span> '
-                    f'<span style="color:#8a7030; font-size:9px;">{ev.period}</span>'
-                    f'{img_tag}<br>'
-                    f'<span style="color:#c0d0e0">{ev.title}</span><br>'
-                    f'<span style="color:#8090a0; font-size:9px;">{ev.description[:150]}</span> '
-                    f'{themes}'
+                    f'<span style="color:#8a7030; font-size:11px;">{ev.period}</span>'
+                    f'{img_tag}</div>'
+                    f'<div style="font-size:13px; color:#d0e0f0; line-height:1.3; '
+                    f'margin-bottom:3px;">{ev.title}</div>'
+                    f'<div style="font-size:12px; color:#8a9aaa; line-height:1.3;">'
+                    f'{ev.description[:200]}</div>'
+                    f'<div style="margin-top:3px;">{themes}</div>'
                     f'</div>'
                 )
 
@@ -2372,6 +2425,12 @@ class MainWindow(QtWidgets.QMainWindow):
         # ── Indigenous territories ──
         territories = payload.get("territories", [])
         if territories:
+            _box_terr = (
+                'margin:0 0 6px 0; padding:8px 10px; '
+                'border-left:4px solid #00ffaa; '
+                'background:#0a1510; '
+                'border-radius:3px;'
+            )
             html_parts = []
             regions = {"southern": [], "central": [], "northern": []}
             for t in territories:
@@ -2382,17 +2441,18 @@ class MainWindow(QtWidgets.QMainWindow):
                 if not terr_list:
                     continue
                 html_parts.append(
-                    f'<div style="margin-top:4px;">'
-                    f'<span style="color:#00ccff">{region_name.upper()} SECTION</span>'
-                    f'</div>'
+                    f'<div style="color:#00ccff; font-size:14px; font-weight:bold; '
+                    f'margin:8px 0 4px 0; letter-spacing:1px;">'
+                    f'{region_name.upper()} SECTION</div>'
                 )
                 for t in terr_list:
                     html_parts.append(
-                        f'<div style="margin:2px 0; padding:2px 0; '
-                        f'border-bottom:1px solid #1a2a3a;">'
+                        f'<div style="{_box_terr}">'
+                        f'<div style="font-size:13px; margin-bottom:3px;">'
                         f'<span style="color:#00ffaa"><b>{t.name}</b></span> — '
-                        f'<span style="color:#c0d0e0">{t.people}</span><br>'
-                        f'<span style="color:#8090a0">{t.description}</span>'
+                        f'<span style="color:#c0d0e0">{t.people}</span></div>'
+                        f'<div style="font-size:12px; color:#8a9aaa; line-height:1.3;">'
+                        f'{t.description}</div>'
                         f'</div>'
                     )
             self._territory_log.setHtml("".join(html_parts))
@@ -2479,6 +2539,51 @@ class MainWindow(QtWidgets.QMainWindow):
                 if not cursor.isNull():
                     self._news_feed_log.setTextCursor(cursor)
                     self._news_feed_log.ensureCursorVisible()
+
+    def _auto_scroll_news_tick(self) -> None:
+        """Advance the news feed scroll by 1 px; wrap to top at the bottom."""
+        if self._news_scroll_paused:
+            return
+        sb = self._news_feed_log.verticalScrollBar()
+        if sb.value() >= sb.maximum():
+            self._news_scroll_paused = True
+            QtCore.QTimer.singleShot(3000, self._news_scroll_resume_top)
+            return
+        sb.setValue(sb.value() + 1)
+
+    def _news_scroll_resume_top(self) -> None:
+        sb = self._news_feed_log.verticalScrollBar()
+        sb.setValue(0)
+        self._news_scroll_paused = False
+
+    def _auto_scroll_terr_tick(self) -> None:
+        """Advance the territory log scroll by 1 px; wrap to top at the bottom."""
+        if self._terr_scroll_paused:
+            return
+        sb = self._territory_log.verticalScrollBar()
+        if sb.value() >= sb.maximum():
+            self._terr_scroll_paused = True
+            QtCore.QTimer.singleShot(3000, self._terr_scroll_resume_top)
+            return
+        sb.setValue(sb.value() + 1)
+
+    def _terr_scroll_resume_top(self) -> None:
+        sb = self._territory_log.verticalScrollBar()
+        sb.setValue(0)
+        self._terr_scroll_paused = False
+
+    def eventFilter(self, obj, event) -> bool:
+        if obj is self._news_feed_log:
+            if event.type() == QtCore.QEvent.Enter:
+                self._news_scroll_paused = True
+            elif event.type() == QtCore.QEvent.Leave:
+                self._news_scroll_paused = False
+        elif obj is self._territory_log:
+            if event.type() == QtCore.QEvent.Enter:
+                self._terr_scroll_paused = True
+            elif event.type() == QtCore.QEvent.Leave:
+                self._terr_scroll_paused = False
+        return super().eventFilter(obj, event)
 
     @QtCore.pyqtSlot(str)
     def _on_map_scanning_tile(self, tile_id: str) -> None:
