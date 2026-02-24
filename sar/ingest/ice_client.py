@@ -365,13 +365,32 @@ def _image_cache_path(image_url: str) -> Path:
 
 _TILE_IMG_SIZE = 512  # all news images are square at this resolution
 
+# Content-hash index: maps file-content MD5 → first cached path.
+# Prevents different URLs that resolve to the same photo from creating
+# duplicate files.  Built lazily on first download call.
+_content_hashes: Optional[dict] = None
+
+
+def _build_content_index() -> dict:
+    """Scan existing cache and build a content-hash → path mapping."""
+    idx: dict = {}
+    if not _CACHE_DIR.exists():
+        return idx
+    for p in _CACHE_DIR.glob("*.png"):
+        h = hashlib.md5(p.read_bytes()).hexdigest()
+        idx.setdefault(h, p)
+    return idx
+
 
 def download_article_image(article: ICEArticle) -> Optional[Path]:
     """Download and cache the article's social image.
 
     Center-cropped to a square, resized to 512x512, high-contrast grayscale.
     Every image has the same 1:1 aspect ratio for stable map display.
+    Skips saving if an identical image (by content hash) already exists.
     """
+    global _content_hashes
+
     if not article.image_url:
         return None
 
@@ -381,6 +400,9 @@ def download_article_image(article: ICEArticle) -> Optional[Path]:
     if out_path.exists():
         article.local_image_path = str(out_path)
         return out_path
+
+    if _content_hashes is None:
+        _content_hashes = _build_content_index()
 
     import requests
     from PIL import Image
@@ -394,19 +416,16 @@ def download_article_image(article: ICEArticle) -> Optional[Path]:
 
         img = Image.open(BytesIO(resp.content)).convert("L")
 
-        # Center-crop to square (keeps the most important central area)
         w, h = img.size
         side = min(w, h)
         left = (w - side) // 2
         top = (h - side) // 2
         img = img.crop((left, top, left + side, top + side))
 
-        # Resize to fixed 512x512
         img = img.resize((_TILE_IMG_SIZE, _TILE_IMG_SIZE), Image.LANCZOS)
 
         arr = np.array(img, dtype=np.float32)
 
-        # Histogram stretch for maximum contrast
         p2 = np.percentile(arr, 2)
         p98 = np.percentile(arr, 98)
         if p98 - p2 > 10:
@@ -414,7 +433,19 @@ def download_article_image(article: ICEArticle) -> Optional[Path]:
         arr = np.clip(arr, 0, 255).astype(np.uint8)
 
         img = Image.fromarray(arr, mode="L")
-        img.save(out_path, "PNG")
+
+        buf = BytesIO()
+        img.save(buf, "PNG")
+        raw = buf.getvalue()
+        content_hash = hashlib.md5(raw).hexdigest()
+
+        existing = _content_hashes.get(content_hash)
+        if existing and existing.exists():
+            article.local_image_path = str(existing)
+            return existing
+
+        out_path.write_bytes(raw)
+        _content_hashes[content_hash] = out_path
         article.local_image_path = str(out_path)
         return out_path
 
