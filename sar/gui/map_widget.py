@@ -531,7 +531,8 @@ class MapScanner(QtCore.QObject):
         self._history_border: Optional[QtWidgets.QGraphicsRectItem] = None
 
         # Sweep counter for alternating geological / social rounds
-        self._sweep_count: int = 0
+        # Start at 1 so the first round is social (images show immediately)
+        self._sweep_count: int = 1
 
         # Animation state
         self._anim_start_time = 0.0

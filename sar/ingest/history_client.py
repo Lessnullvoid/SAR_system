@@ -2,21 +2,26 @@
 Social-history event loader — static historical events along the SAF corridor.
 
 Loads events from data/social_history.json and downloads + caches their
-Wikipedia Commons images locally for use as map tile overlays.
+images locally for use as map tile overlays.
+
+Image resolution strategy (in order):
+  1. Try the ``image_url`` from the JSON directly.
+  2. Search Wikipedia for the event title and grab the lead image thumbnail.
+  3. Search Wikipedia for "city + date_year" as a broader fallback.
 
 Data flow
 ─────────
   data/social_history.json  →  load_history_events()
                              →  List[HistoryEvent]
-  HistoryEvent.image_url    →  download_history_images()
-                             →  data/history_cache/{slug}.jpg
+  download_history_images() →  data/history_cache/{slug}.jpg
 """
 from __future__ import annotations
 
-import hashlib
 import logging
 import re
-from dataclasses import dataclass, field
+import time
+from dataclasses import dataclass
+from io import BytesIO
 from pathlib import Path
 from typing import List, Optional
 
@@ -30,6 +35,9 @@ _UA = (
     "SAR-System/1.0 (https://github.com/Lessnullvoid/SAR_system; "
     "educational research project) python-requests"
 )
+
+_WIKI_API = "https://en.wikipedia.org/w/api.php"
+_THUMB_SIZE = 512
 
 
 @dataclass
@@ -89,16 +97,78 @@ def load_history_events() -> List[HistoryEvent]:
     return events
 
 
+# ── Wikipedia image resolution helpers ────────────────────────────────
+
+def _wiki_search_thumb(session, query: str) -> Optional[str]:
+    """Search Wikipedia and return the lead-image thumbnail URL of the top hit."""
+    try:
+        resp = session.get(
+            _WIKI_API,
+            params={
+                "action": "query",
+                "generator": "search",
+                "gsrsearch": query,
+                "gsrlimit": "1",
+                "prop": "pageimages",
+                "format": "json",
+                "pithumbsize": str(_THUMB_SIZE),
+            },
+            timeout=20,
+        )
+        resp.raise_for_status()
+        pages = resp.json().get("query", {}).get("pages", {})
+        for page in pages.values():
+            thumb = page.get("thumbnail", {}).get("source")
+            if thumb:
+                return thumb
+    except Exception as exc:
+        log.debug("Wiki search failed for '%s': %s", query, exc)
+    return None
+
+
+def _resolve_image_url(session, ev: HistoryEvent) -> Optional[str]:
+    """Try multiple strategies to find a usable image URL for an event."""
+    # Strategy 1: direct URL from JSON (if it returns 200)
+    if ev.image_url:
+        try:
+            head = session.head(ev.image_url, timeout=10, allow_redirects=True)
+            if head.status_code == 200:
+                return ev.image_url
+        except Exception:
+            pass
+
+    # Strategy 2: search Wikipedia by event title
+    url = _wiki_search_thumb(session, ev.title)
+    if url:
+        return url
+
+    # Strategy 3: broader search with city + year
+    year = ev.date[:4] if ev.date else ""
+    if year and ev.city:
+        url = _wiki_search_thumb(session, f"{ev.city} {year}")
+        if url:
+            return url
+
+    return None
+
+
+# ── Main download entry point ─────────────────────────────────────────
+
 def download_history_images(events: List[HistoryEvent]) -> List[HistoryEvent]:
-    """Download Wikipedia Commons images for events that lack a local cache.
+    """Download images for events that lack a local cache.
+
+    Uses a multi-strategy approach: tries the JSON URL first, then falls
+    back to Wikipedia API search for the event title or city+year.
 
     Returns the same list with ``image_path`` fields updated.
     """
     import requests
     from PIL import Image
-    from io import BytesIO
 
     _CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+    session = requests.Session()
+    session.headers["User-Agent"] = _UA
 
     downloaded = 0
     skipped = 0
@@ -108,24 +178,24 @@ def download_history_images(events: List[HistoryEvent]) -> List[HistoryEvent]:
         if ev.image_path:
             skipped += 1
             continue
-        if not ev.image_url:
-            continue
 
         slug = _slugify(ev.title)
         dest = _CACHE_DIR / f"{slug}.jpg"
 
+        image_url = _resolve_image_url(session, ev)
+        if not image_url:
+            failed += 1
+            log.debug("No image found for: %s", ev.title)
+            continue
+
         try:
-            resp = requests.get(
-                ev.image_url,
-                headers={"User-Agent": _UA},
-                timeout=30,
-            )
+            resp = session.get(image_url, timeout=30)
             resp.raise_for_status()
 
             img = Image.open(BytesIO(resp.content))
-            img = img.convert("L")  # grayscale for consistency with news images
+            img = img.convert("L")
 
-            max_dim = 512
+            max_dim = _THUMB_SIZE
             if max(img.size) > max_dim:
                 ratio = max_dim / max(img.size)
                 new_size = (int(img.width * ratio), int(img.height * ratio))
@@ -134,12 +204,15 @@ def download_history_images(events: List[HistoryEvent]) -> List[HistoryEvent]:
             img.save(str(dest), "JPEG", quality=85)
             ev.image_path = str(dest)
             downloaded += 1
-            log.debug("Downloaded history image: %s", dest.name)
+            log.debug("Downloaded history image: %s → %s", ev.title[:50], dest.name)
+
+            time.sleep(1.0)
 
         except Exception as exc:
             failed += 1
-            log.warning("Failed to download %s: %s", ev.image_url, exc)
+            log.warning("Failed to download image for '%s': %s", ev.title[:50], exc)
 
+    session.close()
     log.info(
         "History images: %d downloaded, %d cached, %d failed",
         downloaded, skipped, failed,
