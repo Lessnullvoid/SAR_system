@@ -530,6 +530,9 @@ class MapScanner(QtCore.QObject):
         self._history_overlay: Optional[QtWidgets.QGraphicsPixmapItem] = None
         self._history_border: Optional[QtWidgets.QGraphicsRectItem] = None
 
+        # Sweep counter for alternating geological / social rounds
+        self._sweep_count: int = 0
+
         # Animation state
         self._anim_start_time = 0.0
         self._anim_duration = 0.7  # seconds
@@ -589,10 +592,11 @@ class MapScanner(QtCore.QObject):
     # ── Dwell time ────────────────────────────────────────────────────
 
     def _dwell_for_tile(self, tile_id: str) -> int:
-        if tile_id in self._news_tile_ids:
-            return self._DWELL_NEWS_MS
-        if tile_id in self._history_tile_ids:
-            return self._DWELL_NEWS_MS
+        if self._is_social_round:
+            if tile_id in self._news_tile_ids:
+                return self._DWELL_NEWS_MS
+            if tile_id in self._history_tile_ids:
+                return self._DWELL_NEWS_MS
         count = self._quake_counts.get(tile_id, 0)
         score = self._tile_scores.get(tile_id, 0.0)
         if count == 0 and score < 0.01:
@@ -622,6 +626,55 @@ class MapScanner(QtCore.QObject):
             x_min - pw, y_min - ph,
             (x_max - x_min) + 2 * pw, (y_max - y_min) + 2 * ph,
         )
+
+    @property
+    def _is_social_round(self) -> bool:
+        return self._sweep_count % 2 == 1
+
+    def _multi_tile_rect(self, tile_id: str, pm: QtGui.QPixmap) -> QtCore.QRectF:
+        """Return a scene rect spanning multiple tiles around *tile_id*.
+
+        Span is chosen by image aspect ratio:
+          landscape  → 3 cols x 2 rows (6 tiles)
+          portrait   → 2 cols x 3 rows (6 tiles)
+          square-ish → 2 cols x 2 rows (4 tiles)
+        Falls back to the single tile rect if neighbours are unavailable.
+        """
+        anchor = self._map._tile_items.get(tile_id)
+        if not anchor:
+            return QtCore.QRectF()
+
+        ar = pm.width() / max(pm.height(), 1)
+        if ar > 1.3:
+            span_c, span_r = 3, 2
+        elif ar < 0.77:
+            span_c, span_r = 2, 3
+        else:
+            span_c, span_r = 2, 2
+
+        row0 = anchor.tile.row
+        col0 = anchor.tile.col
+
+        # Build a quick lookup: (row, col) → TileItem
+        rc_map: Dict[tuple, "TileItem"] = {}
+        for item in self._map._tile_items.values():
+            rc_map[(item.tile.row, item.tile.col)] = item
+
+        rects: list = []
+        for dr in range(span_r):
+            for dc in range(span_c):
+                nb = rc_map.get((row0 + dr, col0 + dc))
+                if nb:
+                    rects.append(nb._rect)
+
+        if len(rects) < 2:
+            return anchor._rect
+
+        x_min = min(r.x() for r in rects)
+        y_min = min(r.y() for r in rects)
+        x_max = max(r.x() + r.width() for r in rects)
+        y_max = max(r.y() + r.height() for r in rects)
+        return QtCore.QRectF(x_min, y_min, x_max - x_min, y_max - y_min)
 
     def _rebuild_queue(self) -> None:
         """Build cluster-based scan queue.
@@ -737,7 +790,7 @@ class MapScanner(QtCore.QObject):
             self._news_border = None
 
     def _show_news_overlay(self, tile_id: str) -> None:
-        """Place a square news image overlay exactly on the tile."""
+        """Place a news image overlay spanning multiple tiles."""
         if not self._running:
             return
         self._remove_news_overlay()
@@ -750,19 +803,19 @@ class MapScanner(QtCore.QObject):
         if pm.width() <= 0 or pm.height() <= 0:
             return
 
-        tile_r = item._rect
-        tw, th = tile_r.width(), tile_r.height()
+        span_r = self._multi_tile_rect(tile_id, pm)
+        tw, th = span_r.width(), span_r.height()
         sx, sy = tw / pm.width(), th / pm.height()
 
         overlay = QtWidgets.QGraphicsPixmapItem(pm)
-        overlay.setPos(tile_r.x(), tile_r.y())
+        overlay.setPos(span_r.x(), span_r.y())
         overlay.setTransform(QtGui.QTransform.fromScale(sx, sy))
         overlay.setZValue(50)
         overlay.setOpacity(1.0)
         self._map._scene.addItem(overlay)
         self._news_overlay = overlay
 
-        border = QtWidgets.QGraphicsRectItem(tile_r)
+        border = QtWidgets.QGraphicsRectItem(span_r)
         pen = QtGui.QPen(QtGui.QColor(0, 220, 255, 220))
         pen.setWidthF(2.0)
         pen.setCosmetic(True)
@@ -786,7 +839,7 @@ class MapScanner(QtCore.QObject):
             self._history_border = None
 
     def _show_history_overlay(self, tile_id: str) -> None:
-        """Place a history image overlay on the tile (amber border)."""
+        """Place a history image overlay spanning multiple tiles (amber border)."""
         if not self._running:
             return
         self._remove_history_overlay()
@@ -799,19 +852,19 @@ class MapScanner(QtCore.QObject):
         if pm.width() <= 0 or pm.height() <= 0:
             return
 
-        tile_r = item._rect
-        tw, th = tile_r.width(), tile_r.height()
+        span_r = self._multi_tile_rect(tile_id, pm)
+        tw, th = span_r.width(), span_r.height()
         sx, sy = tw / pm.width(), th / pm.height()
 
         overlay = QtWidgets.QGraphicsPixmapItem(pm)
-        overlay.setPos(tile_r.x(), tile_r.y())
+        overlay.setPos(span_r.x(), span_r.y())
         overlay.setTransform(QtGui.QTransform.fromScale(sx, sy))
         overlay.setZValue(50)
         overlay.setOpacity(1.0)
         self._map._scene.addItem(overlay)
         self._history_overlay = overlay
 
-        border = QtWidgets.QGraphicsRectItem(tile_r)
+        border = QtWidgets.QGraphicsRectItem(span_r)
         pen = QtGui.QPen(QtGui.QColor(220, 170, 30, 220))
         pen.setWidthF(2.0)
         pen.setCosmetic(True)
@@ -863,8 +916,11 @@ class MapScanner(QtCore.QObject):
             self._group_idx = 0
             self._tile_in_group = 0
             self._group_entered = False
+            self._sweep_count += 1
             self._rebuild_queue()
-            log.info("MapScanner: sweep complete — starting new sweep")
+            round_label = "social" if self._is_social_round else "geological"
+            log.info("MapScanner: sweep complete — starting %s round #%d",
+                     round_label, self._sweep_count)
             self._phase = "overview"
             self._animate_to_rect(self._map._fault_rect)
             self.scan_overview.emit()
@@ -921,18 +977,22 @@ class MapScanner(QtCore.QObject):
         dwell_ms = self._dwell_for_tile(tile_id)
         is_news = tile_id in self._news_tile_ids
         is_history = tile_id in self._history_tile_ids
+        show_overlay = self._is_social_round and (is_news or is_history)
 
-        padding_close = max(tile_rect.width(), tile_rect.height()) * 2.0
+        if show_overlay:
+            padding_close = max(tile_rect.width(), tile_rect.height()) * 4.0
+        else:
+            padding_close = max(tile_rect.width(), tile_rect.height()) * 2.0
         self._closeup_rect = tile_rect.adjusted(
             -padding_close, -padding_close,
             padding_close, padding_close,
         )
 
-        is_quiet = (not is_news and not is_history
-                    and self._quake_counts.get(tile_id, 0) == 0
-                    and self._tile_scores.get(tile_id, 0.0) < 0.01)
+        has_seismic = (self._quake_counts.get(tile_id, 0) > 0
+                       or self._tile_scores.get(tile_id, 0.0) >= 0.01)
+        is_quiet = not show_overlay and not has_seismic
 
-        if is_news:
+        if show_overlay and is_news:
             self._regional_rect = self._closeup_rect
             self._animate_to_rect(self._closeup_rect)
             self._current_dwell_ms = dwell_ms
@@ -942,7 +1002,7 @@ class MapScanner(QtCore.QObject):
             )
             self._scan_timer.start(int(self._anim_duration * 1000) + dwell_ms)
 
-        elif is_history:
+        elif show_overlay and is_history:
             self._regional_rect = self._closeup_rect
             self._animate_to_rect(self._closeup_rect)
             self._current_dwell_ms = dwell_ms
