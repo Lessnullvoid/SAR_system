@@ -23,6 +23,7 @@ import logging
 import math
 import os
 import platform
+import random
 import time
 from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
@@ -153,14 +154,8 @@ class TileItem(QtWidgets.QGraphicsObject):
         r = self._local_rect
         selected = self._scanner_focus or self._hovered
 
-        # ── Layer 1: Tile image ──
-        if selected and self._pixmap_news:
-            src = QtCore.QRectF(self._pixmap_news.rect())
-            painter.drawPixmap(r, self._pixmap_news, src)
-        elif selected and self._pixmap_history:
-            src = QtCore.QRectF(self._pixmap_history.rect())
-            painter.drawPixmap(r, self._pixmap_history, src)
-        elif self._pixmap_sat:
+        # ── Layer 1: Tile image (satellite only — news/history shown via overlay) ──
+        if self._pixmap_sat:
             src = QtCore.QRectF(self._pixmap_sat.rect())
             painter.drawPixmap(r, self._pixmap_sat, src)
             if not self.tile.on_fault:
@@ -730,23 +725,32 @@ class MapScanner(QtCore.QObject):
         if not item or not item._pixmap_news:
             return
         item._ensure_all_news_pixmaps()
-        pm = item._pixmap_news
+
+        pixmaps = item._news_pixmaps
+        if not pixmaps:
+            return
+        pm = random.choice(pixmaps)
         if pm.width() <= 0 or pm.height() <= 0:
             return
 
         span_r = self._multi_tile_rect(tile_id, pm)
         tw, th = span_r.width(), span_r.height()
-        sx, sy = tw / pm.width(), th / pm.height()
+        scale = min(tw / pm.width(), th / pm.height())
+        img_w = pm.width() * scale
+        img_h = pm.height() * scale
+        cx = span_r.x() + (tw - img_w) / 2.0
+        cy = span_r.y() + (th - img_h) / 2.0
 
         overlay = QtWidgets.QGraphicsPixmapItem(pm)
-        overlay.setPos(span_r.x(), span_r.y())
-        overlay.setTransform(QtGui.QTransform.fromScale(sx, sy))
+        overlay.setPos(cx, cy)
+        overlay.setTransform(QtGui.QTransform.fromScale(scale, scale))
         overlay.setZValue(50)
         overlay.setOpacity(1.0)
         self._map._scene.addItem(overlay)
         self._news_overlay = overlay
 
-        border = QtWidgets.QGraphicsRectItem(span_r)
+        img_rect = QtCore.QRectF(cx, cy, img_w, img_h)
+        border = QtWidgets.QGraphicsRectItem(img_rect)
         pen = QtGui.QPen(QtGui.QColor(0, 220, 255, 220))
         pen.setWidthF(2.0)
         pen.setCosmetic(True)
@@ -755,8 +759,6 @@ class MapScanner(QtCore.QObject):
         border.setZValue(51)
         self._map._scene.addItem(border)
         self._news_border = border
-        if item.news_image_count > 1:
-            item.advance_news_image()
 
     def _remove_history_overlay(self) -> None:
         if self._history_overlay is not None:
@@ -774,23 +776,32 @@ class MapScanner(QtCore.QObject):
         if not item or not item._pixmap_history:
             return
         item._ensure_all_history_pixmaps()
-        pm = item._pixmap_history
+
+        pixmaps = item._history_pixmaps
+        if not pixmaps:
+            return
+        pm = random.choice(pixmaps)
         if pm.width() <= 0 or pm.height() <= 0:
             return
 
         span_r = self._multi_tile_rect(tile_id, pm)
         tw, th = span_r.width(), span_r.height()
-        sx, sy = tw / pm.width(), th / pm.height()
+        scale = min(tw / pm.width(), th / pm.height())
+        img_w = pm.width() * scale
+        img_h = pm.height() * scale
+        cx = span_r.x() + (tw - img_w) / 2.0
+        cy = span_r.y() + (th - img_h) / 2.0
 
         overlay = QtWidgets.QGraphicsPixmapItem(pm)
-        overlay.setPos(span_r.x(), span_r.y())
-        overlay.setTransform(QtGui.QTransform.fromScale(sx, sy))
+        overlay.setPos(cx, cy)
+        overlay.setTransform(QtGui.QTransform.fromScale(scale, scale))
         overlay.setZValue(50)
         overlay.setOpacity(1.0)
         self._map._scene.addItem(overlay)
         self._history_overlay = overlay
 
-        border = QtWidgets.QGraphicsRectItem(span_r)
+        img_rect = QtCore.QRectF(cx, cy, img_w, img_h)
+        border = QtWidgets.QGraphicsRectItem(img_rect)
         pen = QtGui.QPen(QtGui.QColor(220, 170, 30, 220))
         pen.setWidthF(2.0)
         pen.setCosmetic(True)
@@ -799,8 +810,6 @@ class MapScanner(QtCore.QObject):
         border.setZValue(51)
         self._map._scene.addItem(border)
         self._history_border = border
-        if item.history_image_count > 1:
-            item.advance_history_image()
 
     # ── Shot executor (narrative state machine) ───────────────────────
 
@@ -1094,14 +1103,24 @@ class FaultMapWidget(QtWidgets.QWidget):
         otl.setContentsMargins(6, 4, 6, 0)
         otl.setSpacing(4)
 
+        _LABEL_BG = "background: rgba(0,0,0,180);"
+
         self._info_label = QtWidgets.QLabel(
             f"S.A.R — {len(tiles)} tiles"
         )
         self._info_label.setStyleSheet(
             "color: rgba(0,204,255,200); font-family: 'Helvetica Neue'; "
-            "font-size: 11px; padding: 2px 4px; background: transparent;"
+            f"font-size: 11px; padding: 2px 4px; {_LABEL_BG}"
         )
         otl.addWidget(self._info_label)
+
+        self._strategy_label = QtWidgets.QLabel("")
+        self._strategy_label.setStyleSheet(
+            "color: rgba(180,200,220,200); font-family: 'Helvetica Neue Mono'; "
+            f"font-size: 9px; padding: 2px 6px; {_LABEL_BG}"
+        )
+        otl.addWidget(self._strategy_label)
+
         otl.addStretch(1)
 
         # Scanner toggle button
@@ -1144,14 +1163,14 @@ class FaultMapWidget(QtWidgets.QWidget):
         self._scan_label = QtWidgets.QLabel("")
         self._scan_label.setStyleSheet(
             "color: rgba(80,104,128,220); font-family: 'Helvetica Neue Mono'; "
-            "font-size: 9px; padding: 1px 4px; background: transparent;"
+            f"font-size: 9px; padding: 1px 4px; {_LABEL_BG}"
         )
         obl.addWidget(self._scan_label)
 
         self._detail_label = QtWidgets.QLabel("")
         self._detail_label.setStyleSheet(
             "color: rgba(112,136,152,220); font-family: 'Helvetica Neue Mono'; "
-            "font-size: 10px; padding: 1px 4px; background: transparent;"
+            f"font-size: 10px; padding: 1px 4px; {_LABEL_BG}"
         )
         obl.addWidget(self._detail_label)
 
@@ -1928,53 +1947,57 @@ class FaultMapWidget(QtWidgets.QWidget):
 
     # ── Scanner controls ──────────────────────────────────────────────
 
+    _SCAN_SS_ON = (
+        "color: #00ccff; font-family: 'Helvetica Neue Mono'; font-size: 9px; "
+        "padding: 1px 8px; background: rgba(0,0,0,180);"
+    )
+    _SCAN_SS_OFF = (
+        "color: #506880; font-family: 'Helvetica Neue Mono'; font-size: 9px; "
+        "padding: 1px 8px; background: rgba(0,0,0,180);"
+    )
+
     def _on_scan_toggle(self, checked: bool) -> None:
         if checked:
             self._scanner.start()
             self._scan_label.setText("SCANNING — autonomous navigation active")
-            self._scan_label.setStyleSheet(
-                "color: #00ccff; font-family: 'Helvetica Neue Mono'; font-size: 9px; "
-                "padding: 1px 8px; background: #040810;"
-            )
+            self._scan_label.setStyleSheet(self._SCAN_SS_ON)
         else:
             self._scanner.stop()
             self._scan_label.setText("")
-            self._scan_label.setStyleSheet(
-                "color: #506880; font-family: 'Helvetica Neue Mono'; font-size: 9px; "
-                "padding: 1px 8px; background: #040810;"
-            )
+            self._scan_label.setStyleSheet(self._SCAN_SS_OFF)
+            self._strategy_label.setText("")
+
+    def _update_strategy_label(self) -> None:
+        eng = self._scanner._engine
+        if not eng or not eng._strategy_history:
+            return
+        strat = eng._strategy_history[-1].name.replace("_", " ")
+        cyc = eng._cycle_count
+        total = len(eng._playlist)
+        idx = eng._playlist_idx
+        self._strategy_label.setText(
+            f"C{cyc}  {strat}  {idx}/{total}"
+        )
 
     def _on_scanner_tile(self, tile_id: str) -> None:
         item = self._tile_items.get(tile_id)
         if item:
             t = item.tile
-            eng = self._scanner._engine
             ch = self._scanner._current_chapter
             ch_type = ch.chapter_type.name if ch else "—"
-            if eng:
-                cyc = eng._cycle_count
-                prog = f"{eng._playlist_idx}/{len(eng._playlist)}"
-            else:
-                cyc, prog = 0, "0/0"
             qcount = item._quake_count
             self._scan_label.setText(
-                f"SCANNING [{ch_type}] C{cyc} {prog} — {t.tile_id}  |  "
-                f"{t.section}  |  score: {item._score:.3f}  |  quakes: {qcount}  |  "
+                f"[{ch_type}] {t.tile_id}  |  {t.section}  |  "
+                f"score: {item._score:.3f}  |  quakes: {qcount}  |  "
                 f"lat {t.centroid_lonlat[1]:.2f}  lon {t.centroid_lonlat[0]:.2f}"
             )
+            self._update_strategy_label()
 
     def _on_scanner_overview(self) -> None:
-        eng = self._scanner._engine
         ch = self._scanner._current_chapter
         ch_type = ch.chapter_type.name if ch else "OVERVIEW"
-        if eng:
-            cyc = eng._cycle_count
-            prog = f"{eng._playlist_idx}/{len(eng._playlist)}"
-        else:
-            cyc, prog = 0, "0/0"
-        self._scan_label.setText(
-            f"SCANNING — overview  [{ch_type}] C{cyc} {prog}"
-        )
+        self._scan_label.setText(f"overview  [{ch_type}]")
+        self._update_strategy_label()
 
     # ── Satellite download ────────────────────────────────────────────
 

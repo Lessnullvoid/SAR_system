@@ -55,7 +55,8 @@ SAR_system/
 │   │   ├── sat_tiles.py           # ESRI satellite imagery downloader + cache
 │   │   └── vector_data.py         # Roads, cities, faults, borders, labels
 │   ├── gui/
-│   │   └── map_widget.py          # FaultMapWidget + TileItem + MapScanner
+│   │   ├── map_widget.py          # FaultMapWidget + TileItem + MapScanner
+│   │   └── narrative_engine.py    # Cycle-based narrative map navigation engine
 │   ├── ingest/
 │   │   ├── usgs_client.py         # USGS earthquake API
 │   │   ├── noaa_client.py         # NOAA SWPC Kp/Dst
@@ -85,7 +86,8 @@ SAR_system/
 │
 ├── data/
 │   ├── sat_cache/                 # Satellite imagery cache (PNG)
-│   ├── news_cache/                # Downloaded news images + articles.json
+│   ├── news_cache/                # Curated news images + articles.json
+│   ├── history_cache/             # Curated historical event images
 │   └── seismo_em.db               # ML feature/anomaly SQLite database
 │
 ├── python_sdr/                    # Standalone SDR app (pre-SAR snapshot)
@@ -111,7 +113,8 @@ All data sources are free, open access, and require no API keys.
 | 6 | **Weather** | NOAA NWS API (19 stations) | 10 min | 5% |
 
 Additional contextual feeds:
-- **GDELT Project** — News articles (ICE/immigration focus) geocoded to fault tiles, displayed as map overlays (10 min)
+- **News imagery** — Curated collection of GDELT news images geocoded to fault tiles, displayed as map overlays (no automatic downloads; manually curated `data/news_cache/`)
+- **Historical imagery** — Curated historical event photographs along the fault corridor (manually curated `data/history_cache/`)
 - **U.S. Census / ACS** — Demographic data for the Social tab (on startup)
 - **Native Land Digital** — Indigenous territory data (on startup)
 
@@ -137,7 +140,7 @@ The fault is modeled as a **north-south corridor** subdivided into ~800 on-fault
 
 ---
 
-## Map & Scanner
+## Map & Narrative Scanner
 
 The fault corridor map renders satellite imagery (ESRI World Imagery, grayscale with histogram stretch) with vector overlays (coastline, highways, secondary faults, cities) and real-time earthquake markers.
 
@@ -147,12 +150,25 @@ The fault corridor map renders satellite imagery (ESRI World Imagery, grayscale 
 - Quiet on-fault tiles: original full-contrast imagery
 - Off-fault tiles: darkened overlay
 
-**Scanner navigation** uses a cluster-based system:
-1. Identifies active clusters (tiles with seismic activity, anomaly scores, or news)
-2. Expands clusters to include surrounding tiles (~15 km radius)
-3. Visits each cluster with regional zoom-out, then close-up per tile
-4. After all active clusters: free navigation covers remaining sectors
-5. Zooms to full corridor between clusters for spatial context
+**Narrative engine** (`sar/gui/narrative_engine.py`) drives the map as a semi-generative navigation system organised into **cycles**. Each cycle builds a manifest of every notable tile and visits them using a different traversal strategy, so the presentation never repeats identically.
+
+**Cycle structure:**
+1. **Build manifest** — categorise all notable tiles: ALERT (seismic), ECHO (historical images), DISPATCH (news images), SURVEY (corridor fill). Tiles with both image types randomly alternate between ECHO and DISPATCH across cycles. Recently-visited tiles are deprioritised.
+2. **Pick strategy** — six traversal strategies rotate without repetition: North-South, South-North, Section Walk, Hotspot First, Interleaved, Random Walk. Each includes internal shuffling for organic movement.
+3. **Generate playlist** — ordered sequence of chapters with periodic BREATH (full corridor overview) inserts for spatial context.
+4. **Execute** — each chapter composes shots (APPROACH, FOCUS, CONTEXT) that control camera animation, tile highlighting, and image overlays.
+5. **Next cycle** — when the playlist is exhausted, a new cycle begins with a fresh manifest and different strategy.
+
+**Image distribution (~40% of content):**
+- ECHO and DISPATCH chapters show images at their source tiles (multi-tile span, aspect-ratio preserved, randomly selected from the tile's image pool)
+- ALERT and SURVEY chapters can borrow images from the nearest image tile, dispersing visual content across the entire corridor
+- Image overlays span 2-6 tiles with centered placement and border indicators
+
+**ML anomaly interrupts:** When the ML detector fires a significant anomaly (score >= 0.75), up to 3 high-scoring on-fault tiles are queued as priority ALERT chapters. A 120-second per-tile cooldown and queue cap of 6 prevent flood monopolisation.
+
+**Overlay indicators:**
+- Strategy label at top of map shows current cycle, strategy name, and progress (e.g. `C2 SOUTH_NORTH 15/108`)
+- All overlay text uses black background for readability across any map region
 
 ---
 
@@ -160,7 +176,7 @@ The fault corridor map renders satellite imagery (ESRI World Imagery, grayscale 
 
 The SDR subsystem captures IQ data from an **RTL-SDR** receiver and processes it through a multi-stage DSP pipeline (decimation, channel filtering, FM/AM/SSB demodulation with two-stage AGC).
 
-**ML scanner** automatically tunes through seismo-EM frequency bands (VLF through 70cm, excluding FM broadcast which suppresses relevant signal characteristics). At each band, 8 spectral features are extracted per FFT frame:
+**ML scanner** automatically tunes through seismo-EM frequency bands (VLF through HF 10m). FM broadcast (88-108 MHz), 2m ham (146 MHz), and 70cm (440 MHz) are excluded — FM suppresses amplitude/phase characteristics relevant to precursor detection, and ham FM bands produce dangerously loud audio spikes from repeaters. At each band, 8 spectral features are extracted per FFT frame:
 
 1. Band power (dB)
 2. Peak frequency (Hz)
@@ -241,7 +257,7 @@ Tabs auto-rotate (ML → Sensors → Social → Audio), context-driven by scanne
 | SDR Reader | USB I/O → IQ queue (decoupled from DSP) |
 | SpectrumWorker | FFT + DSP + demodulation (QThread) |
 | Audio Playback | Ring buffer → sounddevice (blocking write) |
-| Qt Main | GUI, map, scanner, ML monitor, tabs |
+| Qt Main | GUI, map, narrative engine, scanner, ML monitor, tabs |
 | Sensor Pollers | Background threads for each API (USGS, NOAA, GNSS, etc.) |
 | SuperCollider | `sclang` subprocess, receives OSC |
 
@@ -427,11 +443,13 @@ Typical usage: ~1.8 GB RAM, ~70% of one CPU core (out of 4).
 
 - Satellite tiles downloaded at 256px (vs 512px desktop) with smooth rendering
 - Global dark stylesheet (overrides Pi desktop theme for pure black GUI)
-- Batched tile loading to avoid GIL starvation of audio pipeline
+- Batched lazy loading for news and history images to avoid GIL starvation of audio pipeline
+- Narrative engine manifest generation runs once per cycle (O(N log N) then O(1) per chapter)
 - Audio routed through PipeWire (Pi 5) or BCM2835 jack (Pi 4)
 - SuperCollider launched via `pw-jack` for PipeWire JACK compatibility
 - SuperCollider launch deferred 10s after map + SDR are stable
 - Staggered sensor polling to spread network and CPU load
+- News/history images loaded from local cache only (no network downloads at runtime)
 - Auto-start on boot via desktop autostart entry (see [RASPBERRY_PI_SETUP.md](RASPBERRY_PI_SETUP.md))
 
 ---

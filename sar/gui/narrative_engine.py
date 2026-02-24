@@ -122,6 +122,12 @@ class NarrativeEngine:
         self._strategy_history: List[_Strategy] = []
 
         self._pending_alert_tiles: List[str] = []
+        self._alert_cooldown: Dict[str, float] = {}
+        self._MAX_PENDING_ALERTS = 6
+        self._ALERT_COOLDOWN_S = 120.0
+
+        self._recent_tiles: List[str] = []
+        self._MAX_RECENT = 60
 
     # ── External data updates ─────────────────────────────────────────
 
@@ -159,48 +165,84 @@ class NarrativeEngine:
             self._tile_history_themes = dict(theme_counts)
 
     def queue_anomaly_alert(self, tile_ids: List[str]) -> None:
+        now = time.monotonic()
+        added = 0
         for tid in tile_ids:
-            if tid not in self._pending_alert_tiles:
-                self._pending_alert_tiles.append(tid)
-        log.info("Narrative: ML anomaly alert queued for %d tiles", len(tile_ids))
+            if len(self._pending_alert_tiles) >= self._MAX_PENDING_ALERTS:
+                break
+            cooldown_until = self._alert_cooldown.get(tid, 0.0)
+            if now < cooldown_until:
+                continue
+            if tid in self._pending_alert_tiles:
+                continue
+            self._pending_alert_tiles.append(tid)
+            self._alert_cooldown[tid] = now + self._ALERT_COOLDOWN_S
+            added += 1
+        if added:
+            log.info("Narrative: ML anomaly alert queued %d tiles (pending=%d)",
+                     added, len(self._pending_alert_tiles))
 
     # ── Manifest ──────────────────────────────────────────────────────
 
     def _build_manifest(self) -> Dict[str, ChapterType]:
-        """Categorise every notable tile into a chapter type.
+        """Categorise notable tiles — with per-cycle randomisation.
 
-        Returns tile_id -> ChapterType for every tile that should be
-        visited in this cycle.
+        Each cycle varies what is shown:
+        - Tiles with BOTH history and news images randomly get ECHO or
+          DISPATCH so both content pools surface across cycles.
+        - Only a random subset (~60-80%) of seismic-only tiles are
+          included, deprioritising recently-visited ones.
+        - Survey fill uses a random offset so different corridor gaps
+          are explored each time.
         """
         manifest: Dict[str, ChapterType] = {}
+        recent_set = set(self._recent_tiles)
 
-        for tid in self._fault_tiles:
-            score = self._tile_scores.get(tid, 0.0)
-            quakes = self._quake_counts.get(tid, 0)
-            if score >= 0.1 or quakes >= 1:
-                if self._tile_has_history_image.get(tid, False):
-                    manifest[tid] = ChapterType.ECHO
-                else:
-                    manifest[tid] = ChapterType.ALERT
+        has_hist = set(
+            t for t in self._fault_tiles
+            if self._tile_has_history_image.get(t, False)
+        )
+        has_news = set(
+            t for t in self._fault_tiles
+            if self._tile_has_news_image.get(t, False)
+        )
+        both = has_hist & has_news
+        hist_only = has_hist - both
+        news_only = has_news - both
 
-        for tid in self._fault_tiles:
-            if tid in manifest:
-                continue
-            if self._tile_has_history_image.get(tid, False):
-                manifest[tid] = ChapterType.ECHO
+        for tid in both:
+            manifest[tid] = random.choice([ChapterType.ECHO, ChapterType.DISPATCH])
 
-        for tid in self._fault_tiles:
-            if tid in manifest:
-                continue
-            if self._tile_has_news_image.get(tid, False):
-                manifest[tid] = ChapterType.DISPATCH
+        for tid in hist_only:
+            manifest[tid] = ChapterType.ECHO
+
+        for tid in news_only:
+            manifest[tid] = ChapterType.DISPATCH
+
+        seismic_candidates = [
+            t for t in self._fault_tiles
+            if t not in manifest
+            and (self._tile_scores.get(t, 0.0) >= 0.1
+                 or self._quake_counts.get(t, 0) >= 1)
+        ]
+        fresh = [t for t in seismic_candidates if t not in recent_set]
+        stale = [t for t in seismic_candidates if t in recent_set]
+        random.shuffle(fresh)
+        random.shuffle(stale)
+        keep_n = max(3, int(len(seismic_candidates) * random.uniform(0.55, 0.80)))
+        selected = (fresh + stale)[:keep_n]
+        for tid in selected:
+            manifest[tid] = ChapterType.ALERT
 
         remaining = [t for t in self._fault_tiles if t not in manifest]
         if remaining:
             remaining.sort(key=lambda t: self._fault_km.get(t, 0))
-            step = max(1, len(remaining) // 15)
-            for i in range(0, len(remaining), step):
-                manifest[remaining[i]] = ChapterType.SURVEY
+            n_surveys = min(15, len(remaining))
+            offset = random.randint(0, max(0, len(remaining) - 1))
+            step = max(1, len(remaining) // n_surveys)
+            for i in range(n_surveys):
+                idx = (offset + i * step) % len(remaining)
+                manifest[remaining[idx]] = ChapterType.SURVEY
 
         log.info(
             "Cycle manifest: %d tiles (ALERT=%d, ECHO=%d, DISPATCH=%d, SURVEY=%d)",
@@ -246,6 +288,13 @@ class NarrativeEngine:
                 playlist.append(self._make_breath())
         return playlist
 
+    @staticmethod
+    def _jitter_nearby(items: List[Tuple[str, ChapterType]]) -> None:
+        """Swap adjacent pairs randomly to break identical sub-ordering."""
+        for i in range(0, len(items) - 1, 2):
+            if random.random() < 0.4:
+                items[i], items[i + 1] = items[i + 1], items[i]
+
     def _apply_strategy(
         self, strategy: _Strategy, manifest: Dict[str, ChapterType],
     ) -> List[Tuple[str, ChapterType]]:
@@ -253,9 +302,11 @@ class NarrativeEngine:
 
         if strategy == _Strategy.NORTH_SOUTH:
             items.sort(key=lambda x: self._fault_km.get(x[0], 0))
+            self._jitter_nearby(items)
 
         elif strategy == _Strategy.SOUTH_NORTH:
             items.sort(key=lambda x: self._fault_km.get(x[0], 0), reverse=True)
+            self._jitter_nearby(items)
 
         elif strategy == _Strategy.SECTION_WALK:
             by_section: Dict[str, List] = defaultdict(list)
@@ -267,7 +318,7 @@ class NarrativeEngine:
             items = []
             for sec in sections:
                 group = by_section[sec]
-                group.sort(key=lambda x: self._fault_km.get(x[0], 0))
+                random.shuffle(group)
                 items.extend(group)
 
         elif strategy == _Strategy.HOTSPOT_FIRST:
@@ -278,10 +329,14 @@ class NarrativeEngine:
             seismic.sort(
                 key=lambda x: self._tile_scores.get(x[0], 0), reverse=True,
             )
-            echo.sort(key=lambda x: self._fault_km.get(x[0], 0))
-            dispatch.sort(key=lambda x: self._fault_km.get(x[0], 0))
+            random.shuffle(echo)
+            random.shuffle(dispatch)
             random.shuffle(survey)
-            items = seismic + echo + dispatch + survey
+            buckets = [seismic, echo, dispatch, survey]
+            random.shuffle(buckets[1:])
+            items = []
+            for b in buckets:
+                items.extend(b)
 
         elif strategy == _Strategy.INTERLEAVED:
             seismic = [
@@ -325,6 +380,7 @@ class NarrativeEngine:
             tid = self._pending_alert_tiles.pop(0)
             if tid in self._fault_km:
                 ch = self._make_alert(tid)
+                self._record_visit(tid)
                 log.info(
                     "Chapter #%d: ALERT (ML anomaly) → %s",
                     self._chapter_count, tid,
@@ -337,6 +393,7 @@ class NarrativeEngine:
 
         ch = self._playlist[self._playlist_idx]
         self._playlist_idx += 1
+        self._record_visit(ch.primary_tile)
 
         log.info(
             "Chapter #%d: %s → %s [cycle %d, %d/%d]",
@@ -344,6 +401,32 @@ class NarrativeEngine:
             self._cycle_count, self._playlist_idx, len(self._playlist),
         )
         return ch
+
+    def _record_visit(self, tile_id: str) -> None:
+        self._recent_tiles.append(tile_id)
+        if len(self._recent_tiles) > self._MAX_RECENT:
+            self._recent_tiles = self._recent_tiles[-self._MAX_RECENT:]
+
+    # ── Spatial image lookup ──────────────────────────────────────────
+
+    def _nearest_image_tile(self, tile_id: str) -> Optional[Tuple[str, str]]:
+        """Find the nearest tile with an image, return (tile_id, 'news'|'history')."""
+        km = self._fault_km.get(tile_id, 0.0)
+        candidates: List[Tuple[float, str, str]] = []
+        for t in self._fault_tiles:
+            if t == tile_id:
+                continue
+            dist = abs(self._fault_km.get(t, 0) - km)
+            if self._tile_has_history_image.get(t, False):
+                candidates.append((dist, t, "history"))
+            if self._tile_has_news_image.get(t, False):
+                candidates.append((dist, t, "news"))
+        if not candidates:
+            return None
+        candidates.sort(key=lambda x: x[0])
+        top = candidates[:6]
+        chosen = random.choice(top)
+        return (chosen[1], chosen[2])
 
     # ── Neighbor lookup ───────────────────────────────────────────────
 
@@ -370,38 +453,52 @@ class NarrativeEngine:
         return self._make_breath()
 
     def _make_alert(self, primary: str) -> Chapter:
-        neighbors = self._neighbors(primary, 2)
+        neighbors = self._neighbors(primary, 1)
         shots = [
-            Shot(ShotKind.ESTABLISH, hold_ms=1200, anim_s=0.7),
-            Shot(ShotKind.APPROACH, tile_id=primary, hold_ms=0, anim_s=0.7),
-            Shot(ShotKind.FOCUS, tile_id=primary, hold_ms=4000, anim_s=0.0),
+            Shot(ShotKind.APPROACH, tile_id=primary, hold_ms=0, anim_s=0.6),
+            Shot(ShotKind.FOCUS, tile_id=primary, hold_ms=3000, anim_s=0.0),
         ]
         for nb in neighbors:
             shots.append(
-                Shot(ShotKind.CONTEXT, tile_id=nb, hold_ms=2000, anim_s=0.5),
+                Shot(ShotKind.CONTEXT, tile_id=nb, hold_ms=1500, anim_s=0.4),
             )
+        if random.random() < 0.55:
+            img = self._nearest_image_tile(primary)
+            if img:
+                shots.append(Shot(
+                    ShotKind.FOCUS, tile_id=img[0], overlay=img[1],
+                    hold_ms=5000, anim_s=0.5,
+                ))
         return Chapter(ChapterType.ALERT, primary, neighbors, shots)
 
     def _make_echo(self, primary: str) -> Chapter:
         neighbors = self._neighbors(primary, 1)
+        has_news_too = self._tile_has_news_image.get(primary, False)
+        overlay = "history"
+        if has_news_too and random.random() < 0.35:
+            overlay = "news"
         shots = [
             Shot(ShotKind.APPROACH, tile_id=primary, hold_ms=0, anim_s=0.7),
-            Shot(ShotKind.FOCUS, tile_id=primary, overlay="history",
-                 hold_ms=6000, anim_s=0.0),
+            Shot(ShotKind.FOCUS, tile_id=primary, overlay=overlay,
+                 hold_ms=8000, anim_s=0.0),
             Shot(ShotKind.FOCUS, tile_id=primary, overlay=None,
                  hold_ms=3000, anim_s=0.0),
         ]
         for nb in neighbors:
             shots.append(
-                Shot(ShotKind.CONTEXT, tile_id=nb, hold_ms=2000, anim_s=0.5),
+                Shot(ShotKind.CONTEXT, tile_id=nb, hold_ms=2500, anim_s=0.5),
             )
         return Chapter(ChapterType.ECHO, primary, neighbors, shots)
 
     def _make_dispatch(self, primary: str) -> Chapter:
+        has_hist_too = self._tile_has_history_image.get(primary, False)
+        overlay = "news"
+        if has_hist_too and random.random() < 0.35:
+            overlay = "history"
         shots = [
             Shot(ShotKind.APPROACH, tile_id=primary, hold_ms=0, anim_s=0.7),
-            Shot(ShotKind.FOCUS, tile_id=primary, overlay="news",
-                 hold_ms=5000, anim_s=0.0),
+            Shot(ShotKind.FOCUS, tile_id=primary, overlay=overlay,
+                 hold_ms=7000, anim_s=0.0),
         ]
         return Chapter(ChapterType.DISPATCH, primary, [], shots)
 
@@ -411,7 +508,7 @@ class NarrativeEngine:
             t for t in self._fault_tiles
             if t != primary and abs(self._fault_km.get(t, 0) - km) <= 40
         ]
-        nearby.sort(key=lambda t: self._fault_km.get(t, 0))
+        random.shuffle(nearby)
         survey_tiles = nearby[:4]
 
         shots = [
@@ -421,6 +518,13 @@ class NarrativeEngine:
             shots.append(
                 Shot(ShotKind.FOCUS, tile_id=tid, hold_ms=2000, anim_s=0.5),
             )
+        if random.random() < 0.6:
+            img = self._nearest_image_tile(primary)
+            if img:
+                shots.append(Shot(
+                    ShotKind.FOCUS, tile_id=img[0], overlay=img[1],
+                    hold_ms=4500, anim_s=0.5,
+                ))
         return Chapter(ChapterType.SURVEY, primary, survey_tiles, shots)
 
     def _make_breath(self) -> Chapter:

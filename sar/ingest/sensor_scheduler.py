@@ -49,11 +49,10 @@ from .weather_client import (
     fetch_weather_observations, compute_corridor_summary, WeatherReading,
 )
 from .ice_client import (
-    ICEArticle, fetch_ice_news, backfill_historical, is_backfill_complete,
-    download_all_images, save_articles, load_articles,
+    ICEArticle, load_articles,
 )
 from .history_client import (
-    HistoryEvent, load_history_events, download_history_images,
+    HistoryEvent, load_history_events,
 )
 from .census_client import fetch_census_data, CountyDemographics
 from .native_land_client import get_saf_territories, IndigenousTerritory
@@ -175,16 +174,15 @@ class SensorScheduler(QtCore.QObject):
         self._geomag_timer.start()
         self._gnss_timer.start()
         self._weather_timer.start()
-        self._news_timer.start()
+        # News timer disabled — curated cache only, no periodic downloads
 
         log.info(
             "SensorScheduler started (USGS %ds, Geomag %ds, GNSS %ds, "
-            "Weather %ds, News %ds)",
+            "Weather %ds, News: cache-only)",
             self._usgs_timer.interval() // 1000,
             self._geomag_timer.interval() // 1000,
             self._gnss_timer.interval() // 1000,
             self._weather_timer.interval() // 1000,
-            self._news_timer.interval() // 1000,
         )
 
     def stop(self) -> None:
@@ -517,57 +515,21 @@ class SensorScheduler(QtCore.QObject):
         ).start()
 
     def _fetch_news(self) -> None:
-        """Fetch ICE news from GDELT and map to tiles.
+        """Load curated news cache — no network downloads.
 
-        Every startup cycle:
-          1. Load cached archive → emit immediately so map has data ASAP.
-          2. Fetch recent 7-day articles, download images, save, re-emit.
-          3. Run historical backfill for any missing weeks (Jan 20 2025→today).
-             Backfill resumes from where it left off and picks up newly
-             elapsed weeks automatically.  After backfill, re-emit full archive.
+        The news image collection is now manually curated.  We only load
+        the locally-cached articles and their existing images; no new
+        images are fetched from the network.
         """
         try:
-            # ── Step 1: Show cached data instantly ──────────────────────
             cached = load_articles()
             if cached:
                 self._news_articles = cached
                 self._emit_news_data(cached)
-                log.info("News: emitted %d cached articles on startup", len(cached))
-
-            # ── Step 2: Fetch recent (last 7 days) ─────────────────────
-            recent = fetch_ice_news(max_records=250)
-            if recent:
-                download_all_images(recent, max_workers=4)
-                save_articles(recent)
-
-                # Re-load full archive (cached + recent merged)
-                articles = load_articles()
-                if articles:
-                    download_all_images(articles, max_workers=4)
-                    save_articles(articles)
-                    self._news_articles = articles
-                    self._emit_news_data(articles)
-                    log.info("News: emitted %d articles after recent fetch",
-                             len(articles))
-
-                # ── Step 3: Historical backfill (only if recent succeeded) ─
-                if not is_backfill_complete():
-                    log.info("News: backfilling history from 2025-01-20…")
-                    new_articles = backfill_historical()
-                    if new_articles:
-                        download_all_images(new_articles, max_workers=4)
-                        save_articles(new_articles)
-                        articles = load_articles()
-                        if articles:
-                            self._news_articles = articles
-                            self._emit_news_data(articles)
-                            log.info("News: emitted %d articles after backfill",
-                                     len(articles))
-                else:
-                    log.info("News: historical backfill already complete")
+                log.info("News: emitted %d cached articles (download disabled)",
+                         len(cached))
             else:
-                log.info("News: no recent articles (rate-limited or empty), "
-                         "skipping backfill")
+                log.info("News: no cached articles found")
 
         except Exception as exc:
             log.error("News fetch error: %s", exc)
@@ -585,12 +547,12 @@ class SensorScheduler(QtCore.QObject):
         ).start()
 
     def _fetch_history(self) -> None:
-        """Load static historical events and download their images (one-shot)."""
+        """Load historical events — use cached images only, no downloads."""
         try:
             events = load_history_events()
             if not events:
                 return
-            events = download_history_images(events)
+            log.info("History: loaded %d events (download disabled)", len(events))
             QtCore.QMetaObject.invokeMethod(
                 self, "_emit_history",
                 QtCore.Qt.QueuedConnection,

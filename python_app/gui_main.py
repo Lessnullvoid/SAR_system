@@ -2670,15 +2670,23 @@ class MainWindow(QtWidgets.QMainWindow):
             cursor.movePosition(cursor.Down, cursor.KeepAnchor, 50)
             cursor.removeSelectedText()
 
-        # Notify narrative engine of significant ML anomalies
+        # Notify narrative engine of significant ML anomalies (rate-limited)
         if result.composite >= 0.75 and self._fault_map is not None:
-            site_lat = 34.30
-            nearby = [
-                t.tile_id for t in self._sar_tiles
-                if t.on_fault and abs(t.centroid_lonlat[1] - site_lat) < 1.0
-            ][:3]
-            if nearby:
-                self._fault_map._scanner.queue_anomaly_alert(nearby)
+            import random as _rng
+            scanner = self._fault_map._scanner
+            engine = getattr(scanner, '_engine', None)
+            scores = engine._tile_scores if engine else {}
+            on_fault = [t for t in self._sar_tiles if t.on_fault]
+            if on_fault:
+                scored = sorted(
+                    on_fault,
+                    key=lambda t: scores.get(t.tile_id, 0.0),
+                    reverse=True,
+                )
+                top = scored[:20]
+                _rng.shuffle(top)
+                nearby = [t.tile_id for t in top[:3]]
+                scanner.queue_anomaly_alert(nearby)
 
     @QtCore.pyqtSlot(str)
     def _show_error(self, msg: str):
