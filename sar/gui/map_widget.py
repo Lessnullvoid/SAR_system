@@ -656,7 +656,6 @@ class MapScanner(QtCore.QObject):
         row0 = anchor.tile.row
         col0 = anchor.tile.col
 
-        # Build a quick lookup: (row, col) → TileItem
         rc_map: Dict[tuple, "TileItem"] = {}
         for item in self._map._tile_items.values():
             rc_map[(item.tile.row, item.tile.col)] = item
@@ -678,20 +677,23 @@ class MapScanner(QtCore.QObject):
         return QtCore.QRectF(x_min, y_min, x_max - x_min, y_max - y_min)
 
     def _rebuild_queue(self) -> None:
-        """Build cluster-based scan queue.
+        """Build a dynamic scan queue that changes every sweep.
 
-        Phase 1 — active clusters:
-          1. Find all active tiles (score > 0.01 or quakes or news)
-          2. Cluster them by proximity along the fault (30 km gap splits)
-          3. Expand each cluster to include quiet neighbours (±15 km)
-          4. Sort clusters by importance (highest first)
+        Geological rounds — full corridor walk:
+          All on-fault tiles sorted by fault distance.  Direction alternates
+          N→S / S→N each geological sweep.  Active tiles get longer dwell;
+          quiet tiles are quick fly-overs.
 
-        Phase 2 — free navigation sectors:
-          5. Group remaining uncovered tiles into geographic sectors
-          6. Append as additional groups after the active clusters
+        Social rounds — image showcase:
+          Only tiles that have news or history images.  Scattered across the
+          corridor so the scanner jumps between different geographic areas,
+          displaying each image overlay at full dwell.
 
-        Each group = {"tiles": [...], "rect": QRectF, "label": str}
+        Both round types rotate the starting offset so the scanner enters
+        the corridor from a different section each time.
         """
+        import random
+
         scores: Dict[str, float] = {}
         for tid, item in self._map._tile_items.items():
             scores[tid] = item._score
@@ -699,85 +701,120 @@ class MapScanner(QtCore.QObject):
             scores.update(self._pending_scores)
         self._tile_scores = scores
 
-        # Fault distance for every on-fault tile
         fault_info: Dict[str, float] = {}
         for tid, item in self._map._tile_items.items():
             if item.tile.on_fault:
                 fault_info[tid] = item.tile.fault_distance_km
 
-        # Active tiles (seismic activity, high score, news, or history)
-        active_set: set = set()
-        for tid in fault_info:
-            if scores.get(tid, 0) > 0.01 or self._quake_counts.get(tid, 0) > 0:
-                active_set.add(tid)
-        active_set.update(self._news_tile_ids & fault_info.keys())
-        active_set.update(self._history_tile_ids & fault_info.keys())
+        if self._is_social_round:
+            self._build_social_queue(fault_info, scores)
+        else:
+            self._build_geological_queue(fault_info, scores)
 
-        # ── Cluster active tiles by fault distance ──
-        sorted_active = sorted(active_set, key=lambda t: fault_info[t])
-        clusters: List[List[str]] = []
-        if sorted_active:
-            cur: List[str] = [sorted_active[0]]
-            for tid in sorted_active[1:]:
-                if fault_info[tid] - fault_info[cur[-1]] > self._CLUSTER_GAP_KM:
-                    clusters.append(cur)
-                    cur = [tid]
-                else:
-                    cur.append(tid)
-            clusters.append(cur)
+    def _build_geological_queue(
+        self, fault_info: Dict[str, float], scores: Dict[str, float]
+    ) -> None:
+        """Full corridor walk — every on-fault tile visited exactly once.
 
-        # ── Build active groups (cluster + neighbours) ──
+        Alternates direction each geological sweep.  Splits into groups of
+        ~8 tiles so the scanner zooms out between sections, giving a sense
+        of traveling along the fault.
+        """
+        geo_sweep_idx = self._sweep_count // 2
+        reverse = (geo_sweep_idx % 2 == 1)
+
+        all_fault = sorted(fault_info.keys(), key=lambda t: fault_info[t],
+                           reverse=reverse)
+
+        # Rotate starting point so each sweep enters from a different area
+        if all_fault:
+            offset = (geo_sweep_idx * 7) % len(all_fault)
+            all_fault = all_fault[offset:] + all_fault[:offset]
+
+        sector_size = 8
         groups: List[Dict] = []
-        visited: set = set()
-        for cluster in clusters:
-            km_min = min(fault_info[t] for t in cluster)
-            km_max = max(fault_info[t] for t in cluster)
-
-            expanded = [
-                tid for tid, km in fault_info.items()
-                if km_min - self._NEIGHBOR_KM <= km <= km_max + self._NEIGHBOR_KM
-            ]
-            # Active tiles first, then quiet neighbours, each by fault distance
-            hot = sorted([t for t in expanded if t in active_set],
-                         key=lambda t: fault_info[t])
-            quiet = sorted([t for t in expanded if t not in active_set],
-                           key=lambda t: fault_info[t])
-            ordered = hot + quiet
-            visited.update(ordered)
-
-            importance = (sum(scores.get(t, 0) for t in cluster)
-                          + sum(self._quake_counts.get(t, 0) for t in cluster) * 0.1)
+        for i in range(0, len(all_fault), sector_size):
+            sector = all_fault[i:i + sector_size]
+            # Within each sector, put active tiles first for emphasis
+            active = [t for t in sector
+                      if scores.get(t, 0) > 0.01
+                      or self._quake_counts.get(t, 0) > 0]
+            quiet = [t for t in sector if t not in set(active)]
+            ordered = active + quiet
+            label = "active" if active else "free"
             groups.append({
                 "tiles": ordered,
                 "rect": self._group_bounding_rect(ordered),
-                "label": "active",
-                "importance": importance,
-            })
-
-        groups.sort(key=lambda g: g["importance"], reverse=True)
-
-        # ── Free navigation sectors (uncovered quiet tiles) ──
-        uncovered = sorted(
-            [tid for tid in fault_info if tid not in visited],
-            key=lambda t: fault_info[t],
-        )
-        for i in range(0, len(uncovered), self._FREE_SECTOR_SIZE):
-            sector = uncovered[i:i + self._FREE_SECTOR_SIZE]
-            groups.append({
-                "tiles": sector,
-                "rect": self._group_bounding_rect(sector),
-                "label": "free",
+                "label": label,
                 "importance": 0,
             })
 
         self._groups = groups
+        n_tiles = sum(len(g["tiles"]) for g in groups)
+        direction = "S→N" if reverse else "N→S"
+        log.info(
+            "MapScanner queue [geological %s]: %d sectors, %d tiles",
+            direction, len(groups), n_tiles,
+        )
 
-        n_active = sum(1 for g in groups if g["label"] == "active")
-        n_free = sum(1 for g in groups if g["label"] == "free")
+    def _build_social_queue(
+        self, fault_info: Dict[str, float], scores: Dict[str, float]
+    ) -> None:
+        """Image showcase — only tiles with news or history content.
+
+        Tiles are spread geographically so the scanner jumps between
+        different areas of the corridor rather than clustering.  A few
+        seismically active tiles without images are interleaved to keep
+        the geological context alive.
+        """
+        import random
+
+        image_tiles = sorted(
+            (self._news_tile_ids | self._history_tile_ids) & fault_info.keys(),
+            key=lambda t: fault_info[t],
+        )
+
+        # Interleave a handful of high-activity tiles for geological context
+        seismic_only = sorted(
+            [t for t in fault_info
+             if t not in self._news_tile_ids
+             and t not in self._history_tile_ids
+             and (scores.get(t, 0) > 0.3
+                  or self._quake_counts.get(t, 0) >= 3)],
+            key=lambda t: -scores.get(t, 0),
+        )[:6]
+
+        combined = image_tiles + seismic_only
+        combined = sorted(set(combined), key=lambda t: fault_info[t])
+
+        social_sweep_idx = self._sweep_count // 2
+        if social_sweep_idx % 2 == 1:
+            combined.reverse()
+
+        # Shuffle in segments of 3 to add variety while keeping geographic flow
+        shuffled: list = []
+        for i in range(0, len(combined), 3):
+            chunk = combined[i:i + 3]
+            random.shuffle(chunk)
+            shuffled.extend(chunk)
+
+        # Build small groups (3-4 tiles) so the scanner zooms out frequently
+        groups: List[Dict] = []
+        group_size = 3
+        for i in range(0, len(shuffled), group_size):
+            sector = shuffled[i:i + group_size]
+            groups.append({
+                "tiles": sector,
+                "rect": self._group_bounding_rect(sector),
+                "label": "social",
+                "importance": 0,
+            })
+
+        self._groups = groups
         n_tiles = sum(len(g["tiles"]) for g in groups)
         log.info(
-            "MapScanner queue: %d active clusters + %d free sectors = %d groups (%d tiles)",
-            n_active, n_free, len(groups), n_tiles,
+            "MapScanner queue [social]: %d groups, %d tiles (%d image, %d seismic)",
+            len(groups), n_tiles, len(image_tiles), len(seismic_only),
         )
 
     # ── News overlay ──────────────────────────────────────────────────
@@ -887,9 +924,9 @@ class MapScanner(QtCore.QObject):
 
         State machine:
           1. No groups / empty queue → rebuild
-          2. All groups done → zoom out, rebuild, new sweep
-          3. Entering new group → zoom to group's regional rect
-          4. Group tiles exhausted → zoom out to corridor, advance group
+          2. All groups done → zoom out to corridor overview, new sweep
+          3. Entering a new group → fly to its regional bounding rect
+          4. Group tiles exhausted → brief corridor fly-over, advance group
           5. Otherwise → visit the next tile in the current group
         """
         if not self._running:
@@ -920,8 +957,8 @@ class MapScanner(QtCore.QObject):
             self._sweep_count += 1
             self._rebuild_queue()
             round_label = "social" if self._is_social_round else "geological"
-            log.info("MapScanner: sweep complete — starting %s round #%d",
-                     round_label, self._sweep_count)
+            log.info("MapScanner: sweep #%d complete — starting %s round",
+                     self._sweep_count, round_label)
             self._phase = "overview"
             self._animate_to_rect(self._map._fault_rect)
             self.scan_overview.emit()
@@ -936,16 +973,11 @@ class MapScanner(QtCore.QObject):
             self._phase = "regional"
             self._animate_to_rect(group["rect"])
             self.scan_overview.emit()
-            hold = 1800 if group["label"] == "active" else 1000
+            hold = 1200 if group["label"] in ("active", "social") else 800
             self._scan_timer.start(int(self._anim_duration * 1000) + hold)
-            log.info(
-                "MapScanner: → %s group %d/%d (%d tiles)",
-                group["label"], self._group_idx + 1, len(self._groups),
-                len(group["tiles"]),
-            )
             return
 
-        # (4) Current group exhausted → zoom out to corridor, next group
+        # (4) Current group exhausted → zoom out briefly, next group
         if self._tile_in_group >= len(group["tiles"]):
             self._group_idx += 1
             self._tile_in_group = 0
@@ -953,7 +985,7 @@ class MapScanner(QtCore.QObject):
             self._phase = "overview"
             self._animate_to_rect(self._map._fault_rect)
             self.scan_overview.emit()
-            corridor_hold = int(self._overview_ms * 0.6)
+            corridor_hold = int(self._overview_ms * 0.5)
             self._scan_timer.start(int(self._anim_duration * 1000) + corridor_hold)
             return
 
@@ -978,7 +1010,8 @@ class MapScanner(QtCore.QObject):
         dwell_ms = self._dwell_for_tile(tile_id)
         is_news = tile_id in self._news_tile_ids
         is_history = tile_id in self._history_tile_ids
-        show_overlay = self._is_social_round and (is_news or is_history)
+        has_image = is_news or is_history
+        show_overlay = self._is_social_round and has_image
 
         if show_overlay:
             padding_close = max(tile_rect.width(), tile_rect.height()) * 4.0
@@ -991,7 +1024,6 @@ class MapScanner(QtCore.QObject):
 
         has_seismic = (self._quake_counts.get(tile_id, 0) > 0
                        or self._tile_scores.get(tile_id, 0.0) >= 0.01)
-        is_quiet = not show_overlay and not has_seismic
 
         if show_overlay and is_news:
             self._regional_rect = self._closeup_rect
@@ -1013,14 +1045,7 @@ class MapScanner(QtCore.QObject):
             )
             self._scan_timer.start(int(self._anim_duration * 1000) + dwell_ms)
 
-        elif is_quiet:
-            self._regional_rect = self._closeup_rect
-            self._animate_to_rect(self._closeup_rect)
-            self._current_dwell_ms = dwell_ms
-            self._scan_timer.start(int(self._anim_duration * 1000) + dwell_ms)
-
-        else:
-            # Active tile → two-phase: regional context, then close-up
+        elif has_seismic:
             padding_reg = max(tile_rect.width(), tile_rect.height()) * 4.0
             self._regional_rect = tile_rect.adjusted(
                 -padding_reg, -padding_reg, padding_reg, padding_reg,
@@ -1029,6 +1054,12 @@ class MapScanner(QtCore.QObject):
             self._current_dwell_ms = dwell_ms
             phase1_ms = int(self._anim_duration * 1000) + dwell_ms
             QtCore.QTimer.singleShot(phase1_ms, self._begin_closeup)
+
+        else:
+            self._regional_rect = self._closeup_rect
+            self._animate_to_rect(self._closeup_rect)
+            self._current_dwell_ms = dwell_ms
+            self._scan_timer.start(int(self._anim_duration * 1000) + dwell_ms)
 
     def _begin_closeup(self) -> None:
         """Phase 2: zoom deeper into the active tile."""
