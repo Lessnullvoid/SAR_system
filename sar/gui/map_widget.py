@@ -1027,22 +1027,16 @@ class MapScanner(QtCore.QObject):
 
         if show_overlay and is_news:
             self._regional_rect = self._closeup_rect
+            self._show_news_overlay(tile_id)
             self._animate_to_rect(self._closeup_rect)
             self._current_dwell_ms = dwell_ms
-            QtCore.QTimer.singleShot(
-                int(self._anim_duration * 1000),
-                lambda tid=tile_id: self._show_news_overlay(tid),
-            )
             self._scan_timer.start(int(self._anim_duration * 1000) + dwell_ms)
 
         elif show_overlay and is_history:
             self._regional_rect = self._closeup_rect
+            self._show_history_overlay(tile_id)
             self._animate_to_rect(self._closeup_rect)
             self._current_dwell_ms = dwell_ms
-            QtCore.QTimer.singleShot(
-                int(self._anim_duration * 1000),
-                lambda tid=tile_id: self._show_history_overlay(tid),
-            )
             self._scan_timer.start(int(self._anim_duration * 1000) + dwell_ms)
 
         elif has_seismic:
