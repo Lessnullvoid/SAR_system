@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+import threading
 import time
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -27,13 +28,22 @@ _DEFAULT_DB = Path(__file__).resolve().parent.parent.parent / "data" / "sar_tile
 
 
 class TileStore:
-    """Persistent storage for tile state snapshots."""
+    """Persistent storage for tile state snapshots.
+
+    Thread-safe: uses check_same_thread=False and serialises writes
+    through a lock so background sensor threads can call save_*().
+    """
 
     def __init__(self, db_path: Optional[Path] = None):
         self._path = db_path or _DEFAULT_DB
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(str(self._path))
+        self._conn = sqlite3.connect(
+            str(self._path), check_same_thread=False,
+        )
         self._conn.execute("PRAGMA journal_mode=WAL")
+        self._write_lock = threading.Lock()
+        self._pending_writes = 0
+        self._FLUSH_EVERY = 20
         self._create_tables()
         log.info("TileStore opened: %s", self._path)
 
@@ -62,18 +72,26 @@ class TileStore:
         """)
         self._conn.commit()
 
+    def _auto_flush(self) -> None:
+        self._pending_writes += 1
+        if self._pending_writes >= self._FLUSH_EVERY:
+            self._conn.commit()
+            self._pending_writes = 0
+
     def save_state(self, state: TileState) -> None:
-        """Store a tile state snapshot."""
-        self._conn.execute(
-            "INSERT INTO tile_snapshots (tile_id, timestamp, composite, data_json) "
-            "VALUES (?, ?, ?, ?)",
-            (
-                state.tile_id,
-                state.timestamp,
-                state.composite_score,
-                json.dumps(state.as_dict()),
-            ),
-        )
+        """Store a tile state snapshot (thread-safe, batched commits)."""
+        with self._write_lock:
+            self._conn.execute(
+                "INSERT INTO tile_snapshots (tile_id, timestamp, composite, data_json) "
+                "VALUES (?, ?, ?, ?)",
+                (
+                    state.tile_id,
+                    state.timestamp,
+                    state.composite_score,
+                    json.dumps(state.as_dict()),
+                ),
+            )
+            self._auto_flush()
 
     def save_event(
         self,
@@ -82,12 +100,14 @@ class TileStore:
         magnitude: float = 0.0,
         detail: Optional[Dict] = None,
     ) -> None:
-        """Store a discrete event (earthquake, anomaly alert, etc.)."""
-        self._conn.execute(
-            "INSERT INTO tile_events (tile_id, timestamp, event_type, magnitude, detail_json) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (tile_id, time.time(), event_type, magnitude, json.dumps(detail or {})),
-        )
+        """Store a discrete event (thread-safe, batched commits)."""
+        with self._write_lock:
+            self._conn.execute(
+                "INSERT INTO tile_events (tile_id, timestamp, event_type, magnitude, detail_json) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (tile_id, time.time(), event_type, magnitude, json.dumps(detail or {})),
+            )
+            self._auto_flush()
 
     def get_recent_states(
         self, tile_id: str, hours: float = 24.0
@@ -118,19 +138,32 @@ class TileStore:
         }
 
     def flush(self) -> None:
-        self._conn.commit()
+        with self._write_lock:
+            self._conn.commit()
+            self._pending_writes = 0
 
     def prune_old(self, days: float = 30.0) -> None:
         """Remove data older than *days*."""
         cutoff = time.time() - days * 86400
-        self._conn.execute(
-            "DELETE FROM tile_snapshots WHERE timestamp < ?", (cutoff,)
-        )
-        self._conn.execute(
-            "DELETE FROM tile_events WHERE timestamp < ?", (cutoff,)
-        )
-        self._conn.commit()
+        with self._write_lock:
+            self._conn.execute(
+                "DELETE FROM tile_snapshots WHERE timestamp < ?", (cutoff,)
+            )
+            self._conn.execute(
+                "DELETE FROM tile_events WHERE timestamp < ?", (cutoff,)
+            )
+            self._conn.commit()
+            self._pending_writes = 0
 
     def close(self) -> None:
         self.flush()
-        self._conn.close()
+        try:
+            self._conn.close()
+        except Exception:
+            pass
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except Exception:
+            pass

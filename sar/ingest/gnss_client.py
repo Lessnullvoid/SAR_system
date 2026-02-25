@@ -189,7 +189,8 @@ def fetch_station_displacement(
         f"https://geodesy.unr.edu/gps_timeseries/tenv3/IGS14/{station_id}.tenv3"
     )
     try:
-        resp = requests.get(url, timeout=timeout)
+        from . import fetch_with_retry
+        resp = fetch_with_retry(url, timeout=timeout, retries=1)
         if resp.status_code != 200:
             log.debug("GNSS station %s: HTTP %d", station_id, resp.status_code)
             return None

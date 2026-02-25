@@ -66,8 +66,8 @@ def fetch_kp_index(timeout: float = 15.0) -> List[KpReading]:
     Returns the last ~3 days of 3-hour Kp values.
     """
     try:
-        resp = requests.get(_KP_URL, timeout=timeout)
-        resp.raise_for_status()
+        from . import fetch_with_retry
+        resp = fetch_with_retry(_KP_URL, timeout=timeout, retries=2)
         data = resp.json()
     except Exception as exc:
         log.warning("NOAA Kp fetch failed: %s", exc)
@@ -95,8 +95,8 @@ def fetch_dst_index(timeout: float = 15.0) -> List[DstReading]:
     Returns the last ~30 days of hourly Dst values.
     """
     try:
-        resp = requests.get(_DST_URL, timeout=timeout)
-        resp.raise_for_status()
+        from . import fetch_with_retry
+        resp = fetch_with_retry(_DST_URL, timeout=timeout, retries=2)
         data = resp.json()
     except Exception as exc:
         log.warning("NOAA Dst fetch failed: %s", exc)
@@ -120,8 +120,8 @@ def fetch_dst_index(timeout: float = 15.0) -> List[DstReading]:
 def fetch_solar_wind(timeout: float = 15.0) -> List[SolarWind]:
     """Fetch last 2 hours of solar wind magnetic field data."""
     try:
-        resp = requests.get(_SOLAR_WIND_URL, timeout=timeout)
-        resp.raise_for_status()
+        from . import fetch_with_retry
+        resp = fetch_with_retry(_SOLAR_WIND_URL, timeout=timeout, retries=2)
         data = resp.json()
     except Exception as exc:
         log.warning("NOAA Solar Wind fetch failed: %s", exc)

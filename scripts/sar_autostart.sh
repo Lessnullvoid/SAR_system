@@ -21,4 +21,8 @@ wpctl set-default "$(wpctl status 2>/dev/null | grep -i 'sound blaster' | grep -
 # Override by setting SAR_SYNTH env var before this script runs
 SAR_SYNTH="${SAR_SYNTH:-both}"
 
-exec python -m python_app.gui_main --synth "$SAR_SYNTH" >> /tmp/sar.log 2>&1
+# Select antenna: loop_antenna (default), fm_broadcast, or discone
+# Override by setting SAR_ANTENNA env var before this script runs
+SAR_ANTENNA="${SAR_ANTENNA:-loop_antenna}"
+
+exec python -m python_app.gui_main --synth "$SAR_SYNTH" --antenna "$SAR_ANTENNA" >> /tmp/sar.log 2>&1

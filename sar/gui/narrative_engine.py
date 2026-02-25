@@ -31,7 +31,7 @@ from __future__ import annotations
 import logging
 import random
 import time
-from collections import defaultdict
+from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Dict, List, Optional, Set, Tuple
@@ -62,6 +62,8 @@ class Shot:
     kind: ShotKind
     tile_id: Optional[str] = None
     overlay: Optional[str] = None   # "news", "history", or None
+    overlay_source_tile: Optional[str] = None  # tile whose images to display (defaults to tile_id)
+    overlay_image_idx: Optional[int] = None    # specific image index in source tile's pool
     hold_ms: int = 1500
     anim_s: float = 0.7
 
@@ -114,12 +116,14 @@ class NarrativeEngine:
         self._tile_has_history_image: Dict[str, bool] = {}
         self._tile_has_news_image: Dict[str, bool] = {}
         self._tile_history_themes: Dict[str, int] = {}
+        self._news_image_counts: Dict[str, int] = {}
+        self._history_image_counts: Dict[str, int] = {}
 
         self._playlist: List[Chapter] = []
         self._playlist_idx = 0
         self._cycle_count = 0
         self._chapter_count = 0
-        self._strategy_history: List[_Strategy] = []
+        self._strategy_history: deque = deque(maxlen=12)
 
         self._pending_alert_tiles: List[str] = []
         self._alert_cooldown: Dict[str, float] = {}
@@ -128,6 +132,13 @@ class NarrativeEngine:
 
         self._recent_tiles: List[str] = []
         self._MAX_RECENT = 60
+
+        # Global image pool — one entry per individual image across all tiles
+        self._image_pool: List[Tuple[str, str, int]] = []  # (tile_id, type, index)
+        self._image_pool_dirty = True
+        self._cycle_image_usage: Dict[Tuple[str, str, int], int] = {}
+        self._global_unseen: Set[Tuple[str, str, int]] = set()
+        self._MAX_PER_IMAGE_PER_CYCLE = 2
 
     # ── External data updates ─────────────────────────────────────────
 
@@ -149,20 +160,28 @@ class NarrativeEngine:
 
     def update_news_tiles(
         self, tile_ids: Set[str], tiles_with_images: Set[str],
+        image_counts: Optional[Dict[str, int]] = None,
     ) -> None:
         self._news_tile_ids = set(tile_ids)
         for tid in tiles_with_images:
             self._tile_has_news_image[tid] = True
+        if image_counts:
+            self._news_image_counts.update(image_counts)
+        self._image_pool_dirty = True
 
     def update_history_tiles(
         self, tile_ids: Set[str], tiles_with_images: Set[str],
         theme_counts: Optional[Dict[str, int]] = None,
+        image_counts: Optional[Dict[str, int]] = None,
     ) -> None:
         self._history_tile_ids = set(tile_ids)
         for tid in tiles_with_images:
             self._tile_has_history_image[tid] = True
         if theme_counts:
             self._tile_history_themes = dict(theme_counts)
+        if image_counts:
+            self._history_image_counts.update(image_counts)
+        self._image_pool_dirty = True
 
     def queue_anomaly_alert(self, tile_ids: List[str]) -> None:
         now = time.monotonic()
@@ -181,6 +200,98 @@ class NarrativeEngine:
         if added:
             log.info("Narrative: ML anomaly alert queued %d tiles (pending=%d)",
                      added, len(self._pending_alert_tiles))
+
+    # ── Global image pool ───────────────────────────────────────────
+
+    def _rebuild_image_pool(self) -> None:
+        """Build a flat list of every individual image across all tiles."""
+        pool: List[Tuple[str, str, int]] = []
+        for tid, count in self._news_image_counts.items():
+            for idx in range(count):
+                pool.append((tid, "news", idx))
+        for tid, count in self._history_image_counts.items():
+            for idx in range(count):
+                pool.append((tid, "history", idx))
+        new_images = set(pool) - set(self._image_pool)
+        self._image_pool = pool
+        self._image_pool_dirty = False
+        if not self._global_unseen:
+            self._global_unseen = set(pool)
+        elif new_images:
+            self._global_unseen |= new_images
+        log.info("Image pool rebuilt: %d images (%d news, %d history), %d unseen",
+                 len(pool),
+                 sum(self._news_image_counts.values()),
+                 sum(self._history_image_counts.values()),
+                 len(self._global_unseen))
+
+    def _begin_cycle_image_plan(self) -> None:
+        """Reset per-cycle image tracking and build the cycle's image queue."""
+        if self._image_pool_dirty:
+            self._rebuild_image_pool()
+        self._cycle_image_usage = {}
+        self._cycle_image_queue: List[Tuple[str, str, int]] = []
+
+        if not self._global_unseen and self._image_pool:
+            self._global_unseen = set(self._image_pool)
+            log.info("All %d images shown — resetting unseen pool", len(self._image_pool))
+
+        unseen = [s for s in self._image_pool if s in self._global_unseen]
+        seen = [s for s in self._image_pool if s not in self._global_unseen]
+        random.shuffle(unseen)
+        random.shuffle(seen)
+        self._cycle_image_queue = unseen + seen
+
+    def _pick_image_for_tile(
+        self, tile_id: str,
+    ) -> Optional[Tuple[str, str, int]]:
+        """Pick the best available image for a chapter near *tile_id*.
+
+        Prefers: unseen images > geographically close > any available.
+        Respects the max-2-per-cycle limit.
+        """
+        if not self._cycle_image_queue and not self._image_pool:
+            return None
+
+        km = self._fault_km.get(tile_id, 0.0)
+
+        def _score(slot: Tuple[str, str, int]) -> float:
+            dist = abs(self._fault_km.get(slot[0], 0) - km)
+            unseen_bonus = -1000.0 if slot in self._global_unseen else 0.0
+            return unseen_bonus + dist
+
+        best = None
+        best_score = float("inf")
+        best_idx = -1
+
+        search_range = min(len(self._cycle_image_queue), 30)
+        for i in range(search_range):
+            slot = self._cycle_image_queue[i]
+            usage = self._cycle_image_usage.get(slot, 0)
+            if usage >= self._MAX_PER_IMAGE_PER_CYCLE:
+                continue
+            s = _score(slot)
+            if s < best_score:
+                best = slot
+                best_score = s
+                best_idx = i
+
+        if best is None:
+            for slot in self._image_pool:
+                usage = self._cycle_image_usage.get(slot, 0)
+                if usage < self._MAX_PER_IMAGE_PER_CYCLE:
+                    best = slot
+                    break
+
+        if best is None:
+            return None
+
+        self._cycle_image_usage[best] = self._cycle_image_usage.get(best, 0) + 1
+        self._global_unseen.discard(best)
+        if best_idx >= 0:
+            self._cycle_image_queue.pop(best_idx)
+
+        return best
 
     # ── Manifest ──────────────────────────────────────────────────────
 
@@ -257,7 +368,7 @@ class NarrativeEngine:
     # ── Strategy ──────────────────────────────────────────────────────
 
     def _pick_strategy(self) -> _Strategy:
-        recent = self._strategy_history[-3:]
+        recent = list(self._strategy_history)[-3:]
         available = [s for s in _ALL_STRATEGIES if s not in recent]
         if not available:
             available = list(_ALL_STRATEGIES)
@@ -274,9 +385,11 @@ class NarrativeEngine:
 
         strategy = self._pick_strategy()
         self._cycle_count += 1
+        self._begin_cycle_image_plan()
         log.info(
-            "Cycle #%d starting — strategy=%s, %d tiles",
+            "Cycle #%d starting — strategy=%s, %d tiles, %d images in pool",
             self._cycle_count, strategy.name, len(manifest),
+            len(self._image_pool),
         )
 
         ordered = self._apply_strategy(strategy, manifest)
@@ -286,6 +399,17 @@ class NarrativeEngine:
             playlist.append(self._make_chapter(ctype, tid))
             if (i + 1) % _BREATH_EVERY == 0 and i < len(ordered) - 1:
                 playlist.append(self._make_breath())
+
+        remaining_unseen = len([
+            s for s in self._image_pool
+            if self._cycle_image_usage.get(s, 0) == 0
+        ])
+        log.info(
+            "Cycle #%d playlist: %d chapters, %d images assigned, %d unseen remain",
+            self._cycle_count, len(playlist),
+            sum(self._cycle_image_usage.values()),
+            remaining_unseen,
+        )
         return playlist
 
     @staticmethod
@@ -407,27 +531,6 @@ class NarrativeEngine:
         if len(self._recent_tiles) > self._MAX_RECENT:
             self._recent_tiles = self._recent_tiles[-self._MAX_RECENT:]
 
-    # ── Spatial image lookup ──────────────────────────────────────────
-
-    def _nearest_image_tile(self, tile_id: str) -> Optional[Tuple[str, str]]:
-        """Find the nearest tile with an image, return (tile_id, 'news'|'history')."""
-        km = self._fault_km.get(tile_id, 0.0)
-        candidates: List[Tuple[float, str, str]] = []
-        for t in self._fault_tiles:
-            if t == tile_id:
-                continue
-            dist = abs(self._fault_km.get(t, 0) - km)
-            if self._tile_has_history_image.get(t, False):
-                candidates.append((dist, t, "history"))
-            if self._tile_has_news_image.get(t, False):
-                candidates.append((dist, t, "news"))
-        if not candidates:
-            return None
-        candidates.sort(key=lambda x: x[0])
-        top = candidates[:6]
-        chosen = random.choice(top)
-        return (chosen[1], chosen[2])
-
     # ── Neighbor lookup ───────────────────────────────────────────────
 
     def _neighbors(self, tile_id: str, n: int = 2) -> List[str]:
@@ -452,6 +555,21 @@ class NarrativeEngine:
             return self._make_survey(primary)
         return self._make_breath()
 
+    def _make_image_shot(
+        self, tile_id: str, hold_ms: int = 6000, anim_s: float = 0.5,
+    ) -> Optional[Shot]:
+        """Try to allocate an image from the global pool for this tile."""
+        img = self._pick_image_for_tile(tile_id)
+        if img is None:
+            return None
+        return Shot(
+            ShotKind.FOCUS, tile_id=tile_id,
+            overlay=img[1],
+            overlay_source_tile=img[0],
+            overlay_image_idx=img[2],
+            hold_ms=hold_ms, anim_s=anim_s,
+        )
+
     def _make_alert(self, primary: str) -> Chapter:
         neighbors = self._neighbors(primary, 1)
         shots = [
@@ -463,27 +581,23 @@ class NarrativeEngine:
                 Shot(ShotKind.CONTEXT, tile_id=nb, hold_ms=1500, anim_s=0.4),
             )
         if random.random() < 0.55:
-            img = self._nearest_image_tile(primary)
-            if img:
-                shots.append(Shot(
-                    ShotKind.FOCUS, tile_id=img[0], overlay=img[1],
-                    hold_ms=5000, anim_s=0.5,
-                ))
+            img_shot = self._make_image_shot(primary, hold_ms=5000)
+            if img_shot:
+                shots.append(img_shot)
         return Chapter(ChapterType.ALERT, primary, neighbors, shots)
 
     def _make_echo(self, primary: str) -> Chapter:
         neighbors = self._neighbors(primary, 1)
-        has_news_too = self._tile_has_news_image.get(primary, False)
-        overlay = "history"
-        if has_news_too and random.random() < 0.35:
-            overlay = "news"
         shots = [
             Shot(ShotKind.APPROACH, tile_id=primary, hold_ms=0, anim_s=0.7),
-            Shot(ShotKind.FOCUS, tile_id=primary, overlay=overlay,
-                 hold_ms=8000, anim_s=0.0),
+        ]
+        img_shot = self._make_image_shot(primary, hold_ms=8000, anim_s=0.0)
+        if img_shot:
+            shots.append(img_shot)
+        shots.append(
             Shot(ShotKind.FOCUS, tile_id=primary, overlay=None,
                  hold_ms=3000, anim_s=0.0),
-        ]
+        )
         for nb in neighbors:
             shots.append(
                 Shot(ShotKind.CONTEXT, tile_id=nb, hold_ms=2500, anim_s=0.5),
@@ -491,15 +605,12 @@ class NarrativeEngine:
         return Chapter(ChapterType.ECHO, primary, neighbors, shots)
 
     def _make_dispatch(self, primary: str) -> Chapter:
-        has_hist_too = self._tile_has_history_image.get(primary, False)
-        overlay = "news"
-        if has_hist_too and random.random() < 0.35:
-            overlay = "history"
         shots = [
             Shot(ShotKind.APPROACH, tile_id=primary, hold_ms=0, anim_s=0.7),
-            Shot(ShotKind.FOCUS, tile_id=primary, overlay=overlay,
-                 hold_ms=7000, anim_s=0.0),
         ]
+        img_shot = self._make_image_shot(primary, hold_ms=7000, anim_s=0.0)
+        if img_shot:
+            shots.append(img_shot)
         return Chapter(ChapterType.DISPATCH, primary, [], shots)
 
     def _make_survey(self, primary: str) -> Chapter:
@@ -519,12 +630,9 @@ class NarrativeEngine:
                 Shot(ShotKind.FOCUS, tile_id=tid, hold_ms=2000, anim_s=0.5),
             )
         if random.random() < 0.6:
-            img = self._nearest_image_tile(primary)
-            if img:
-                shots.append(Shot(
-                    ShotKind.FOCUS, tile_id=img[0], overlay=img[1],
-                    hold_ms=4500, anim_s=0.5,
-                ))
+            img_shot = self._make_image_shot(primary, hold_ms=5000)
+            if img_shot:
+                shots.append(img_shot)
         return Chapter(ChapterType.SURVEY, primary, survey_tiles, shots)
 
     def _make_breath(self) -> Chapter:

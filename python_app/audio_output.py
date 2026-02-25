@@ -172,11 +172,11 @@ class AudioOutput:
 
     @property
     def volume(self) -> float:
-        return self._volume
+        return self._volume  # atomic float read under GIL
 
     @volume.setter
     def volume(self, val: float) -> None:
-        self._volume = max(0.0, min(val, 3.0))
+        self._volume = max(0.0, min(val, 3.0))  # atomic float assign under GIL
 
     # ── internal helpers ──────────────────────────────────────────────
 

@@ -122,8 +122,8 @@ def fetch_recent_earthquakes(
     url = _FEEDS.get(period, _FEEDS["day"])
 
     try:
-        resp = requests.get(url, timeout=timeout)
-        resp.raise_for_status()
+        from . import fetch_with_retry
+        resp = fetch_with_retry(url, timeout=timeout, retries=2)
         data = resp.json()
     except Exception as exc:
         log.warning("USGS feed fetch failed: %s", exc)

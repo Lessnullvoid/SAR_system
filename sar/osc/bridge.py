@@ -141,7 +141,7 @@ class OSCBridge:
             )
             self._msg_count += 5
         except Exception as exc:
-            log.debug("OSC send error for tile %s: %s", tid, exc)
+            log.warning("OSC send error for tile %s: %s", tid, exc)
 
     def send_alert(self, alert) -> None:
         """Send a FusionAlert via OSC."""
@@ -156,7 +156,7 @@ class OSCBridge:
             )
             self._msg_count += 1
         except Exception as exc:
-            log.debug("OSC alert send error: %s", exc)
+            log.warning("OSC alert send error: %s", exc)
 
     def send_global(self, kp: float, dst: float) -> None:
         """Send global geomagnetic state."""
@@ -168,7 +168,7 @@ class OSCBridge:
             self._client.send_message("/sar/global/dst", dst)
             self._msg_count += 2
         except Exception as exc:
-            log.debug("OSC global send error: %s", exc)
+            log.warning("OSC global send error: %s", exc)
 
     def heartbeat(self) -> None:
         """Send periodic heartbeat."""
@@ -179,7 +179,7 @@ class OSCBridge:
             self._client.send_message("/sar/heartbeat", time.time())
             self._msg_count += 1
         except Exception as exc:
-            log.debug("OSC heartbeat error: %s", exc)
+            log.warning("OSC heartbeat error: %s", exc)
 
     def send_top_tiles(self, top_tiles: list) -> None:
         """Send the top N tile scores as a batch.
@@ -198,7 +198,7 @@ class OSCBridge:
                 )
             self._msg_count += len(top_tiles)
         except Exception as exc:
-            log.debug("OSC top tiles error: %s", exc)
+            log.warning("OSC top tiles error: %s", exc)
 
     _ALERT_LEVEL_MAP = {
         "info": 0.0, "watch": 0.25,
@@ -510,35 +510,51 @@ class SuperColliderProcess:
     def _drain_output(self) -> None:
         """Read sclang stdout and log it (runs in daemon thread)."""
         try:
-            for line in self._sc_proc.stdout:
+            proc = self._sc_proc
+            if proc is None or proc.stdout is None:
+                return
+            for line in proc.stdout:
+                if proc.poll() is not None:
+                    break
                 stripped = line.rstrip()
                 if stripped:
                     log.debug("[sclang] %s", stripped)
+        except (ValueError, OSError):
+            pass
         except Exception:
             pass
 
+    def _safe_kill(self, proc: subprocess.Popen, name: str,
+                   term_timeout: float = 5.0) -> None:
+        """Terminate a subprocess gracefully, escalating to SIGKILL."""
+        if proc is None or proc.poll() is not None:
+            return
+        pid = proc.pid
+        log.info("Stopping %s (PID %d)...", name, pid)
+        try:
+            proc.terminate()
+        except OSError:
+            pass
+        try:
+            proc.wait(timeout=term_timeout)
+        except subprocess.TimeoutExpired:
+            log.warning("%s did not exit in %ds, sending SIGKILL", name, term_timeout)
+            try:
+                proc.kill()
+            except OSError:
+                pass
+            try:
+                proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                log.error("%s (PID %d) did not die after SIGKILL", name, pid)
+        log.info("%s stopped.", name)
+
     def stop(self) -> None:
         """Shut down sclang and JACK gracefully."""
-        if self._sc_proc and self._sc_proc.poll() is None:
-            log.info("Stopping SuperCollider (PID %d)...", self._sc_proc.pid)
-            self._sc_proc.terminate()
-            try:
-                self._sc_proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                self._sc_proc.kill()
-                self._sc_proc.wait(timeout=2)
-            log.info("SuperCollider stopped.")
+        self._safe_kill(self._sc_proc, "SuperCollider")
         self._sc_proc = None
 
-        if self._jack_proc and self._jack_proc.poll() is None:
-            log.info("Stopping JACK (PID %d)...", self._jack_proc.pid)
-            self._jack_proc.terminate()
-            try:
-                self._jack_proc.wait(timeout=3)
-            except subprocess.TimeoutExpired:
-                self._jack_proc.kill()
-                self._jack_proc.wait(timeout=2)
-            log.info("JACK stopped.")
+        self._safe_kill(self._jack_proc, "JACK", term_timeout=3.0)
         self._jack_proc = None
 
         self._running = False

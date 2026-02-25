@@ -282,31 +282,35 @@ class TileItem(QtWidgets.QGraphicsObject):
         self._lazy_hist_batch()
 
     def _lazy_hist_batch(self) -> None:
-        end = min(
-            self._lazy_hist_idx + self._LAZY_HIST_BATCH,
-            len(self._history_image_paths),
-        )
-        for i in range(self._lazy_hist_idx, end):
-            path = self._history_image_paths[i]
-            pm = QtGui.QPixmap(path)
-            if not pm.isNull():
-                _pi_max = 256 if _IS_PI else 512
-                if pm.width() > _pi_max or pm.height() > _pi_max:
-                    pm = pm.scaled(
-                        _pi_max, _pi_max, QtCore.Qt.KeepAspectRatio,
-                        QtCore.Qt.SmoothTransformation,
-                    )
-                self._history_pixmaps.append(pm)
-        self._lazy_hist_idx = end
-        if end < len(self._history_image_paths):
-            QtCore.QTimer.singleShot(5, self._lazy_hist_batch)
-        else:
-            log.debug(
-                "Lazy-loaded %d/%d history images for %s",
-                len(self._history_pixmaps),
+        try:
+            end = min(
+                self._lazy_hist_idx + self._LAZY_HIST_BATCH,
                 len(self._history_image_paths),
-                self.tile.tile_id,
             )
+            for i in range(self._lazy_hist_idx, end):
+                path = self._history_image_paths[i]
+                pm = QtGui.QPixmap(path)
+                if not pm.isNull():
+                    _pi_max = 256 if _IS_PI else 512
+                    if pm.width() > _pi_max or pm.height() > _pi_max:
+                        pm = pm.scaled(
+                            _pi_max, _pi_max, QtCore.Qt.KeepAspectRatio,
+                            QtCore.Qt.SmoothTransformation,
+                        )
+                    self._history_pixmaps.append(pm)
+            self._lazy_hist_idx = end
+            if end < len(self._history_image_paths):
+                QtCore.QTimer.singleShot(5, self._lazy_hist_batch)
+            else:
+                log.debug(
+                    "Lazy-loaded %d/%d history images for %s",
+                    len(self._history_pixmaps),
+                    len(self._history_image_paths),
+                    self.tile.tile_id,
+                )
+        except Exception as exc:
+            log.warning("History image lazy-load error for %s: %s",
+                        self.tile.tile_id, exc)
 
     def advance_history_image(self) -> bool:
         """Advance to the next history image. Returns True if there are more."""
@@ -425,24 +429,28 @@ class TileItem(QtWidgets.QGraphicsObject):
 
     def _lazy_load_batch(self) -> None:
         """Load a small batch of news images, then yield to the event loop."""
-        end = min(self._lazy_load_idx + self._LAZY_BATCH,
-                  len(self._news_image_paths))
-        for i in range(self._lazy_load_idx, end):
-            path = self._news_image_paths[i]
-            pm = QtGui.QPixmap(path)
-            if not pm.isNull():
-                _pi_max = 256 if _IS_PI else 512
-                if pm.width() > _pi_max or pm.height() > _pi_max:
-                    pm = pm.scaled(_pi_max, _pi_max, QtCore.Qt.KeepAspectRatio,
-                                   QtCore.Qt.SmoothTransformation)
-                self._news_pixmaps.append(pm)
-        self._lazy_load_idx = end
-        if end < len(self._news_image_paths):
-            QtCore.QTimer.singleShot(5, self._lazy_load_batch)
-        else:
-            log.debug("Lazy-loaded %d/%d news images for %s",
-                      len(self._news_pixmaps), len(self._news_image_paths),
-                      self.tile.tile_id)
+        try:
+            end = min(self._lazy_load_idx + self._LAZY_BATCH,
+                      len(self._news_image_paths))
+            for i in range(self._lazy_load_idx, end):
+                path = self._news_image_paths[i]
+                pm = QtGui.QPixmap(path)
+                if not pm.isNull():
+                    _pi_max = 256 if _IS_PI else 512
+                    if pm.width() > _pi_max or pm.height() > _pi_max:
+                        pm = pm.scaled(_pi_max, _pi_max, QtCore.Qt.KeepAspectRatio,
+                                       QtCore.Qt.SmoothTransformation)
+                    self._news_pixmaps.append(pm)
+            self._lazy_load_idx = end
+            if end < len(self._news_image_paths):
+                QtCore.QTimer.singleShot(5, self._lazy_load_batch)
+            else:
+                log.debug("Lazy-loaded %d/%d news images for %s",
+                          len(self._news_pixmaps), len(self._news_image_paths),
+                          self.tile.tile_id)
+        except Exception as exc:
+            log.warning("News image lazy-load error for %s: %s",
+                        self.tile.tile_id, exc)
 
     def advance_news_image(self) -> bool:
         """Advance to the next news image. Returns True if there are more."""
@@ -603,23 +611,28 @@ class MapScanner(QtCore.QObject):
         self._news_tile_ids = set(tile_ids)
         eng = self._ensure_engine()
         img_set = set()
+        img_counts: Dict[str, int] = {}
         for tid in tile_ids:
             item = self._map._tile_items.get(tid)
             if item and item._pixmap_news:
                 img_set.add(tid)
-        eng.update_news_tiles(tile_ids, img_set)
-        log.info("MapScanner: %d news tiles registered", len(tile_ids))
+                img_counts[tid] = max(1, len(item._news_image_paths))
+        eng.update_news_tiles(tile_ids, img_set, img_counts)
+        total_images = sum(img_counts.values())
+        log.info("MapScanner: %d news tiles, %d total images", len(tile_ids), total_images)
 
     def update_history_tiles(self, tile_ids: set) -> None:
         self._history_tile_ids = set(tile_ids)
         eng = self._ensure_engine()
         img_set = set()
         theme_counts: Dict[str, int] = {}
+        img_counts: Dict[str, int] = {}
         for tid in tile_ids:
             item = self._map._tile_items.get(tid)
             if item:
                 if item._pixmap_history:
                     img_set.add(tid)
+                    img_counts[tid] = max(1, len(item._history_image_paths))
                 themes = set()
                 for ev in item._history_events:
                     for t in ev.theme.split(","):
@@ -627,8 +640,9 @@ class MapScanner(QtCore.QObject):
                         if t:
                             themes.add(t)
                 theme_counts[tid] = len(themes)
-        eng.update_history_tiles(tile_ids, img_set, theme_counts)
-        log.info("MapScanner: %d history tiles registered", len(tile_ids))
+        eng.update_history_tiles(tile_ids, img_set, theme_counts, img_counts)
+        total_images = sum(img_counts.values())
+        log.info("MapScanner: %d history tiles, %d total images", len(tile_ids), total_images)
 
     def queue_anomaly_alert(self, tile_ids: list) -> None:
         """Called by GUI when ML detects an anomaly."""
@@ -717,7 +731,7 @@ class MapScanner(QtCore.QObject):
             self._map._scene.removeItem(self._news_border)
             self._news_border = None
 
-    def _show_news_overlay(self, tile_id: str) -> None:
+    def _show_news_overlay(self, tile_id: str, image_idx: int = -1) -> None:
         if not self._running:
             return
         self._remove_news_overlay()
@@ -729,7 +743,10 @@ class MapScanner(QtCore.QObject):
         pixmaps = item._news_pixmaps
         if not pixmaps:
             return
-        pm = random.choice(pixmaps)
+        if 0 <= image_idx < len(pixmaps):
+            pm = pixmaps[image_idx]
+        else:
+            pm = random.choice(pixmaps)
         if pm.width() <= 0 or pm.height() <= 0:
             return
 
@@ -768,7 +785,7 @@ class MapScanner(QtCore.QObject):
             self._map._scene.removeItem(self._history_border)
             self._history_border = None
 
-    def _show_history_overlay(self, tile_id: str) -> None:
+    def _show_history_overlay(self, tile_id: str, image_idx: int = -1) -> None:
         if not self._running:
             return
         self._remove_history_overlay()
@@ -780,7 +797,10 @@ class MapScanner(QtCore.QObject):
         pixmaps = item._history_pixmaps
         if not pixmaps:
             return
-        pm = random.choice(pixmaps)
+        if 0 <= image_idx < len(pixmaps):
+            pm = pixmaps[image_idx]
+        else:
+            pm = random.choice(pixmaps)
         if pm.width() <= 0 or pm.height() <= 0:
             return
 
@@ -892,21 +912,25 @@ class MapScanner(QtCore.QObject):
                     item.set_scanner_focus(True)
                     self.scanning_tile.emit(tid)
 
-                    # Overlay placement
+                    src_tile = shot.overlay_source_tile or tid
+                    img_idx = shot.overlay_image_idx if shot.overlay_image_idx is not None else -1
+
                     if shot.overlay == "news":
-                        self._show_news_overlay(tid)
+                        self._show_news_overlay(src_tile, img_idx)
                     elif shot.overlay == "history":
-                        self._show_history_overlay(tid)
+                        self._show_history_overlay(src_tile, img_idx)
 
                     has_overlay = shot.overlay in ("news", "history")
                     if has_overlay:
+                        src_item = self._map._tile_items.get(src_tile)
                         pm = None
-                        if shot.overlay == "news" and item._pixmap_news:
-                            pm = item._pixmap_news
-                        elif shot.overlay == "history" and item._pixmap_history:
-                            pm = item._pixmap_history
+                        if src_item:
+                            if shot.overlay == "news" and src_item._pixmap_news:
+                                pm = src_item._pixmap_news
+                            elif shot.overlay == "history" and src_item._pixmap_history:
+                                pm = src_item._pixmap_history
                         if pm:
-                            overlay_r = self._multi_tile_rect(tid, pm)
+                            overlay_r = self._multi_tile_rect(src_tile, pm)
                             pad = max(overlay_r.width(), overlay_r.height()) * 1.0
                             target = overlay_r.adjusted(-pad, -pad, pad, pad)
                         else:
@@ -1267,36 +1291,36 @@ class FaultMapWidget(QtWidgets.QWidget):
         A small delay between batches prevents GIL starvation of the
         SDR/DSP and audio playback threads during startup.
         """
-        end = min(self._tile_load_idx + self._TILE_LOAD_BATCH,
-                  len(self._tile_load_queue))
+        try:
+            end = min(self._tile_load_idx + self._TILE_LOAD_BATCH,
+                      len(self._tile_load_queue))
 
-        for i in range(self._tile_load_idx, end):
-            item = self._tile_load_queue[i]
-            if not item._sat_loaded:
-                img_path = get_tile_image_path(item.tile.tile_id)
-                if img_path:
-                    item._load_sat_image_no_update(img_path)
-                else:
-                    item._sat_loaded = True  # no image, don't retry
+            for i in range(self._tile_load_idx, end):
+                item = self._tile_load_queue[i]
+                if not item._sat_loaded:
+                    img_path = get_tile_image_path(item.tile.tile_id)
+                    if img_path:
+                        item._load_sat_image_no_update(img_path)
+                    else:
+                        item._sat_loaded = True
 
-        self._tile_load_idx = end
+            self._tile_load_idx = end
 
-        if self._tile_load_idx < len(self._tile_load_queue):
-            # More tiles to load — schedule next batch with a small delay
-            # so the DSP and audio threads get CPU time between batches.
-            loaded = self._tile_load_idx
-            total = len(self._tile_load_queue)
-            if loaded % 500 == 0:
-                log.info("Tile loading: %d / %d (%.0f%%)",
-                         loaded, total, 100.0 * loaded / total)
-            QtCore.QTimer.singleShot(self._TILE_LOAD_DELAY_MS,
-                                     self._load_tile_batch)
-        else:
-            # All tiles loaded — single scene refresh
-            log.info("All %d tile pixmaps loaded", len(self._tile_load_queue))
-            self._tile_load_queue = []
-            self._scene.update()
-            self.tiles_loaded.emit()
+            if self._tile_load_idx < len(self._tile_load_queue):
+                loaded = self._tile_load_idx
+                total = len(self._tile_load_queue)
+                if loaded % 500 == 0:
+                    log.info("Tile loading: %d / %d (%.0f%%)",
+                             loaded, total, 100.0 * loaded / total)
+                QtCore.QTimer.singleShot(self._TILE_LOAD_DELAY_MS,
+                                         self._load_tile_batch)
+            else:
+                log.info("All %d tile pixmaps loaded", len(self._tile_load_queue))
+                self._tile_load_queue = []
+                self._scene.update()
+                self.tiles_loaded.emit()
+        except Exception as exc:
+            log.error("Tile batch load error: %s", exc)
 
     def _add_vector_overlay(self) -> None:
         """Draw bold vector data (roads, coastline, borders, faults).
@@ -1659,6 +1683,33 @@ class FaultMapWidget(QtWidgets.QWidget):
             item._hovered = True
             item.update()
 
+    def _find_tile_at_scene(self, sx: float, sy: float) -> Optional[str]:
+        """O(1) tile lookup using cached spatial grid (falls back to linear scan)."""
+        if not hasattr(self, "_tile_grid_lookup"):
+            grid: Dict[tuple, str] = {}
+            for tid, titem in self._tile_items.items():
+                r = titem._rect
+                cx = r.x() + r.width() / 2
+                cy = r.y() + r.height() / 2
+                cell_w = r.width() if r.width() > 0 else 1.0
+                cell_h = r.height() if r.height() > 0 else 1.0
+                key = (int(cx / cell_w), int(cy / cell_h))
+                grid[key] = tid
+            self._tile_grid_lookup = grid
+            self._tile_cell_w = cell_w
+            self._tile_cell_h = cell_h
+
+        key = (int(sx / self._tile_cell_w), int(sy / self._tile_cell_h))
+        tid = self._tile_grid_lookup.get(key)
+        if tid:
+            return tid
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                tid = self._tile_grid_lookup.get((key[0] + dx, key[1] + dy))
+                if tid and self._tile_items[tid]._rect.contains(sx, sy):
+                    return tid
+        return None
+
     def update_earthquakes(self, quakes) -> None:
         import pyproj
 
@@ -1668,12 +1719,10 @@ class FaultMapWidget(QtWidgets.QWidget):
             self._scene.removeItem(item)
         self._quake_markers.clear()
 
-        # Reset per-tile quake counts
         tile_quake_counts: Dict[str, int] = {}
         tile_quake_maxmag: Dict[str, float] = {}
 
         if not quakes:
-            # Clear all tile badges
             for item in self._tile_items.values():
                 item.set_quake_data(0, 0.0)
             self._info_label.setText(
@@ -1695,14 +1744,12 @@ class FaultMapWidget(QtWidgets.QWidget):
             sx = (mx - self._origin_x) * sf
             sy = -(my - self._origin_y) * sf
 
-            # ── Count per tile ──
-            for tid, titem in self._tile_items.items():
-                if titem._rect.contains(sx, sy):
-                    tile_quake_counts[tid] = tile_quake_counts.get(tid, 0) + 1
-                    tile_quake_maxmag[tid] = max(
-                        tile_quake_maxmag.get(tid, 0.0), q.mag
-                    )
-                    break
+            tid = self._find_tile_at_scene(sx, sy)
+            if tid:
+                tile_quake_counts[tid] = tile_quake_counts.get(tid, 0) + 1
+                tile_quake_maxmag[tid] = max(
+                    tile_quake_maxmag.get(tid, 0.0), q.mag
+                )
 
             # ── Draw epicenter marker on the scene ──
             radius = max(1.5, min(q.mag * 2.5, 20.0))
@@ -1827,13 +1874,7 @@ class FaultMapWidget(QtWidgets.QWidget):
             sx = (mx - self._origin_x) * sf
             sy = -(my - self._origin_y) * sf
 
-            # Find enclosing tile
-            best_tid = None
-            for tid, titem in self._tile_items.items():
-                if titem._rect.contains(sx, sy):
-                    best_tid = tid
-                    break
-
+            best_tid = self._find_tile_at_scene(sx, sy)
             if best_tid:
                 tile_events.setdefault(best_tid, []).append(ev)
 

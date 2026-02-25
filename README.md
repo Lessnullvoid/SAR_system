@@ -38,7 +38,7 @@ SAR_system/
 │   ├── audio_output.py            # Ring-buffer audio thread (sounddevice)
 │   ├── rtl_device.py              # RTL-SDR hardware interface (pyrtlsdr)
 │   ├── config/
-│   │   └── antennas.json          # Antenna configurations
+│   │   └── antennas.json          # Antenna profiles (loop, FM whip, discone)
 │   └── ml/
 │       ├── bands.py               # Frequency band definitions (VLF → 70cm)
 │       ├── features.py            # 8 spectral feature extractors
@@ -78,7 +78,7 @@ SAR_system/
 │       └── tile_store.py          # SQLite tile state persistence
 │
 ├── supercollider/
-│   └── sar_drone.scd              # Geological drone SynthDef
+│   └── sar_main.scd               # Drone + Resonator SynthDefs
 │
 ├── scripts/
 │   ├── sar_autostart.sh           # Pi auto-start script
@@ -205,9 +205,13 @@ All demodulators normalize to consistent output levels via slow AGC (FM target 0
 
 ---
 
-## SuperCollider Drone
+## SuperCollider Audio Engine
 
-A continuous **geological drone** evolves through 7 minor keys (Am → Dm → Gm → Cm → Fm → Bbm → Ebm), driven by sensor data via OSC on port 57120.
+Two synths run simultaneously, both driven by the same sensor data via OSC on port 57120. Use the `--synth` flag to select which ones to launch.
+
+### Geological Drone (`sar_drone`)
+
+A continuous drone that evolves through 7 minor keys (Am → Dm → Gm → Cm → Fm → Bbm → Ebm).
 
 **Design philosophy:**
 - **Glacial tempo** — Full chord cycle takes 15-40 minutes. Individual chords linger for 5+ minutes. 20-second portamento makes transitions feel tectonic.
@@ -215,13 +219,23 @@ A continuous **geological drone** evolves through 7 minor keys (Am → Dm → Gm
 - **Near-constant volume** — Interest comes from timbral and harmonic evolution, not loudness changes. Amplitude range is deliberately tight.
 - **Slow breathing** — Overlapping 1-4 minute modulation cycles create swells felt more than heard.
 
-| Sensor | Sound Parameter |
-|--------|----------------|
-| `activity` (0-1) | Voice emergence thresholds, harmonic lean |
-| `events` (count) | Chord progression speed, grain density |
-| `kp` (0-9) | Filter brightness, 7th voice gate |
-| `dst` (nT) | Microtonal detuning (storm = dissonance) |
-| `alert` (0-1) | Dissonant minor 9th tension tone |
+### Sympathetic String Resonator (`sar_resonator`)
+
+A 6-string harmonic bank tuned to E2 A2 D3 G3 B3 E4 (open guitar tuning). Each string is modeled as a set of partials with independent wobble and detuning. Strings activate progressively as seismic activity rises — quiet conditions sustain only the two lowest strings, while higher activity opens the upper register.
+
+- **Physical excitation** — Impulse-driven with rate controlled by event count, simulating ground-coupled vibration exciting the strings.
+- **Sympathetic resonance** — Partials interact through shared detuning (driven by Dst), so geomagnetic storms make the strings beat and shimmer.
+- **Alert response** — High anomaly scores inject dissonant energy into the string bank.
+
+### OSC Sensor Mapping (shared by both synths)
+
+| Sensor | Drone | Resonator |
+|--------|-------|-----------|
+| `activity` (0-1) | Voice emergence thresholds, harmonic lean | String gate thresholds, partial depth |
+| `events` (count) | Chord progression speed, grain density | Impulse excitation rate |
+| `kp` (0-9) | Filter brightness, 7th voice gate | Filter brightness |
+| `dst` (nT) | Microtonal detuning (storm = dissonance) | Sympathetic detuning across all strings |
+| `alert` (0-1) | Dissonant minor 9th tension tone | Dissonant energy injection |
 
 Python auto-launches `sclang` on startup (via `pw-jack` on PipeWire systems) and kills it on exit. On Raspberry Pi 5, both SDR and SuperCollider audio are mixed through PipeWire to a shared USB sound card.
 
@@ -273,6 +287,33 @@ python -m python_app.gui_main
 
 The application starts in **fullscreen**. Press **F** to toggle fullscreen mode.
 
+### Startup flags
+
+| Flag | Values | Default | Description |
+|------|--------|---------|-------------|
+| `--antenna` | `loop_antenna`, `fm_broadcast`, `discone` | `loop_antenna` | Which antenna is physically connected to the RTL-SDR |
+| `--synth` | `both`, `drone`, `resonator` | `both` | Which SuperCollider synth(s) to launch |
+
+### Antenna selection
+
+The `--antenna` flag tells the system which antenna is physically connected.
+It sets the correct RTL-SDR hardware mode, default frequency, gain, and
+demodulation mode at startup:
+
+| Antenna | RTL-SDR mode | Default freq | Mode | Gain | Use case |
+|---------|-------------|-------------|------|------|----------|
+| `loop_antenna` | Direct Sampling Q | 1.0 MHz | AM | 20 dB | HF/VLF seismo-EM monitoring (primary) |
+| `fm_broadcast` | Quadrature | 98.0 MHz | FM | 30 dB | VHF whip, FM broadcast reference |
+| `discone` | Quadrature | 144.0 MHz | FM | 25 dB | Broadband VHF/UHF scanning |
+
+The ML scanner plan currently uses only `loop_antenna` positions (VLF through HF 10m).
+
+```bash
+python -m python_app.gui_main --antenna loop_antenna     # HF loop (default)
+python -m python_app.gui_main --antenna fm_broadcast     # VHF whip
+python -m python_app.gui_main --antenna discone          # broadband discone
+```
+
 ### SuperCollider synth selection
 
 By default both synths (drone + sympathetic string resonator) launch together.
@@ -284,7 +325,22 @@ python -m python_app.gui_main --synth drone        # drone only
 python -m python_app.gui_main --synth resonator    # resonator only
 ```
 
-On the Raspberry Pi autostart script you can also set the `SAR_SYNTH` environment variable before boot (e.g. in `~/.bashrc` or directly in `scripts/sar_autostart.sh`).
+### Combined flags
+
+```bash
+python -m python_app.gui_main --antenna discone --synth drone
+```
+
+### Environment variables (Pi autostart)
+
+On the Raspberry Pi autostart script (`scripts/sar_autostart.sh`), both flags
+can be overridden via environment variables set before boot (e.g. in
+`~/.bashrc` or directly in the script):
+
+| Variable | Default | Equivalent flag |
+|----------|---------|-----------------|
+| `SAR_ANTENNA` | `loop_antenna` | `--antenna` |
+| `SAR_SYNTH` | `both` | `--synth` |
 
 Requires:
 - **RTL-SDR** USB dongle (pyrtlsdr) — system runs without it (map + sensors still active)
@@ -384,9 +440,17 @@ Log out and back in (or reboot) for the group change to take effect.
 ```bash
 cd ~/SAR_system
 source .venv/bin/activate
-python -m python_app.gui_main                  # both synths (default)
-python -m python_app.gui_main --synth drone    # drone only
-python -m python_app.gui_main --synth resonator # resonator only
+python -m python_app.gui_main                                   # defaults (loop_antenna, both synths)
+python -m python_app.gui_main --antenna loop_antenna             # explicit HF loop
+python -m python_app.gui_main --antenna discone --synth drone    # discone + drone only
+```
+
+To change the defaults for auto-start on boot, edit the environment variables
+in `scripts/sar_autostart.sh`:
+
+```bash
+SAR_ANTENNA="loop_antenna"   # or fm_broadcast, discone
+SAR_SYNTH="both"             # or drone, resonator
 ```
 
 The application starts in fullscreen. Press **F** to toggle fullscreen mode.
@@ -414,7 +478,8 @@ Then restart the app and click **Satellite** again.
 |-----------|----------|-------|
 | Raspberry Pi 5 | 8 GB RAM | Pi 4 with 4+ GB may work but is untested |
 | USB sound card | Yes | e.g. Creative Sound Blaster Play! 3 |
-| RTL-SDR dongle | For radio | e.g. RTL-SDR Blog V3/V4 |
+| RTL-SDR dongle | For radio | e.g. RTL-SDR Blog V3/V4 (direct-sampling capable for HF) |
+| Antenna | For radio | Active HF loop (`loop_antenna`), VHF whip (`fm_broadcast`), or broadband discone (`discone`) — set via `--antenna` flag |
 | Display | HDMI | GUI requires a display (not headless) |
 | Internet | Yes | Sensor APIs require network access |
 | SD card | 32 GB+ | ~200 MB for app + tiles + database |

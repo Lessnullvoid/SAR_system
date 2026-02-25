@@ -49,7 +49,7 @@ from .weather_client import (
     fetch_weather_observations, compute_corridor_summary, WeatherReading,
 )
 from .ice_client import (
-    ICEArticle, load_articles,
+    ICEArticle, fetch_ice_news, save_articles, load_articles,
 )
 from .history_client import (
     HistoryEvent, load_history_events,
@@ -119,6 +119,15 @@ class SensorScheduler(QtCore.QObject):
         self._news_articles: List[ICEArticle] = []
         self._news_by_tile: Dict[str, List[ICEArticle]] = {}
 
+        # Overlap guards — prevent concurrent fetches of the same type
+        self._fetching_usgs = False
+        self._fetching_geomag = False
+        self._fetching_gnss = False
+        self._fetching_weather = False
+        self._fetching_news = False
+        self._fetching_history = False
+        self._fetching_social = False
+
         # Polling timers
         self._usgs_timer = QtCore.QTimer(self)
         self._usgs_timer.setInterval(int(usgs_interval_s * 1000))
@@ -174,15 +183,16 @@ class SensorScheduler(QtCore.QObject):
         self._geomag_timer.start()
         self._gnss_timer.start()
         self._weather_timer.start()
-        # News timer disabled — curated cache only, no periodic downloads
+        self._news_timer.start()
 
         log.info(
             "SensorScheduler started (USGS %ds, Geomag %ds, GNSS %ds, "
-            "Weather %ds, News: cache-only)",
+            "Weather %ds, News %ds)",
             self._usgs_timer.interval() // 1000,
             self._geomag_timer.interval() // 1000,
             self._gnss_timer.interval() // 1000,
             self._weather_timer.interval() // 1000,
+            self._news_timer.interval() // 1000,
         )
 
     def stop(self) -> None:
@@ -201,6 +211,9 @@ class SensorScheduler(QtCore.QObject):
     # ── USGS Polling ─────────────────────────────────────────────────
 
     def _poll_usgs(self) -> None:
+        if self._fetching_usgs or not self._running:
+            return
+        self._fetching_usgs = True
         threading.Thread(
             target=self._fetch_usgs, daemon=True, name="usgs-poll"
         ).start()
@@ -213,10 +226,8 @@ class SensorScheduler(QtCore.QObject):
             )
             self._earthquakes = quakes
 
-            # Map to tiles
             tile_quakes = self._mapper.map_earthquakes(quakes)
 
-            # Update tile seismic states (on-fault tiles only)
             scores: Dict[str, float] = {}
             with self._state_lock:
                 for tile in self._tiles:
@@ -246,7 +257,6 @@ class SensorScheduler(QtCore.QObject):
                     state.timestamp = time.time()
                     scores[tid] = state.composite_score
 
-            # Emit on main thread
             QtCore.QMetaObject.invokeMethod(
                 self, "_emit_usgs",
                 QtCore.Qt.QueuedConnection,
@@ -261,10 +271,15 @@ class SensorScheduler(QtCore.QObject):
                 QtCore.Qt.QueuedConnection,
                 QtCore.Q_ARG(str, f"USGS error: {exc}"),
             )
+        finally:
+            self._fetching_usgs = False
 
     # ── Geomag + Ionospheric Polling ─────────────────────────────────
 
     def _poll_geomag(self) -> None:
+        if self._fetching_geomag or not self._running:
+            return
+        self._fetching_geomag = True
         threading.Thread(
             target=self._fetch_geomag, daemon=True, name="geomag-poll"
         ).start()
@@ -327,10 +342,15 @@ class SensorScheduler(QtCore.QObject):
                 QtCore.Qt.QueuedConnection,
                 QtCore.Q_ARG(str, f"Geomag error: {exc}"),
             )
+        finally:
+            self._fetching_geomag = False
 
     # ── GNSS Polling ────────────────────────────────────────────────
 
     def _poll_gnss(self) -> None:
+        if self._fetching_gnss or not self._running:
+            return
+        self._fetching_gnss = True
         threading.Thread(
             target=self._fetch_gnss, daemon=True, name="gnss-poll"
         ).start()
@@ -409,10 +429,15 @@ class SensorScheduler(QtCore.QObject):
                 QtCore.Qt.QueuedConnection,
                 QtCore.Q_ARG(str, f"GNSS error: {exc}"),
             )
+        finally:
+            self._fetching_gnss = False
 
     # ── Weather Polling ───────────────────────────────────────────────
 
     def _poll_weather(self) -> None:
+        if self._fetching_weather or not self._running:
+            return
+        self._fetching_weather = True
         threading.Thread(
             target=self._fetch_weather, daemon=True, name="weather-poll"
         ).start()
@@ -480,6 +505,8 @@ class SensorScheduler(QtCore.QObject):
                 QtCore.Qt.QueuedConnection,
                 QtCore.Q_ARG(str, f"Weather error: {exc}"),
             )
+        finally:
+            self._fetching_weather = False
 
     # ── News Polling ─────────────────────────────────────────────────
 
@@ -510,26 +537,76 @@ class SensorScheduler(QtCore.QObject):
         )
 
     def _poll_news(self) -> None:
+        if self._fetching_news or not self._running:
+            return
+        self._fetching_news = True
         threading.Thread(
             target=self._fetch_news, daemon=True, name="news-poll"
         ).start()
 
     def _fetch_news(self) -> None:
-        """Load curated news cache — no network downloads.
+        """Fetch real-time news articles and distribute curated images.
 
-        The news image collection is now manually curated.  We only load
-        the locally-cached articles and their existing images; no new
-        images are fetched from the network.
+        1. Load cached articles from articles.json (offline fallback).
+        2. Fetch recent articles from GDELT (text only — no image downloads).
+        3. Save merged archive to articles.json for next offline run.
+        4. Scan curated PNGs in news_cache/ and distribute across fault tiles
+           so all images appear in the map navigation.
         """
         try:
+            from .ice_client import _CACHE_DIR, _SAF_CITIES
+
+            # ── Step 1: Load cached articles ─────────────────────────
             cached = load_articles()
             if cached:
                 self._news_articles = cached
                 self._emit_news_data(cached)
-                log.info("News: emitted %d cached articles (download disabled)",
-                         len(cached))
-            else:
-                log.info("News: no cached articles found")
+                log.info("News: emitted %d cached articles on startup", len(cached))
+
+            # ── Step 2: Fetch recent from GDELT (no image downloads) ─
+            try:
+                recent = fetch_ice_news(max_records=250)
+            except Exception as net_err:
+                log.warning("News: GDELT fetch failed (offline?): %s", net_err)
+                recent = []
+
+            if recent:
+                save_articles(recent)
+                articles = load_articles()
+                if articles:
+                    self._news_articles = articles
+                    self._emit_news_data(articles)
+                    log.info("News: emitted %d articles after GDELT fetch "
+                             "(no image downloads)", len(articles))
+
+            # ── Step 3: Distribute curated PNGs across tiles ─────────
+            cache_dir = _CACHE_DIR
+            if cache_dir.exists():
+                pngs = sorted(cache_dir.glob("*.png"))
+                if pngs:
+                    cities = list(_SAF_CITIES.items())
+                    img_articles = []
+                    for i, png_path in enumerate(pngs):
+                        city_name, (lat, lon) = cities[i % len(cities)]
+                        art = ICEArticle(
+                            url=f"local://{png_path.name}",
+                            title=png_path.stem,
+                            date="2025-01-20",
+                            source="curated",
+                            image_url="",
+                            local_image_path=str(png_path),
+                            lat=lat,
+                            lon=lon,
+                            city=city_name,
+                        )
+                        img_articles.append(art)
+
+                    all_articles = list(self._news_articles) + img_articles
+                    self._news_articles = all_articles
+                    self._emit_news_data(all_articles)
+                    log.info("News: %d curated images distributed across %d cities "
+                             "(%d total articles)", len(pngs), len(cities),
+                             len(all_articles))
 
         except Exception as exc:
             log.error("News fetch error: %s", exc)
@@ -538,10 +615,15 @@ class SensorScheduler(QtCore.QObject):
                 QtCore.Qt.QueuedConnection,
                 QtCore.Q_ARG(str, f"News error: {exc}"),
             )
+        finally:
+            self._fetching_news = False
 
     # ── Social data (Census + Native Land + SCEDC) ─────────────────
 
     def _poll_history(self) -> None:
+        if self._fetching_history or not self._running:
+            return
+        self._fetching_history = True
         threading.Thread(
             target=self._fetch_history, daemon=True, name="history-poll"
         ).start()
@@ -560,8 +642,13 @@ class SensorScheduler(QtCore.QObject):
             )
         except Exception as exc:
             log.error("History data load error: %s", exc)
+        finally:
+            self._fetching_history = False
 
     def _poll_social(self) -> None:
+        if self._fetching_social or not self._running:
+            return
+        self._fetching_social = True
         threading.Thread(
             target=self._fetch_social, daemon=True, name="social-poll"
         ).start()
@@ -592,6 +679,8 @@ class SensorScheduler(QtCore.QObject):
 
         except Exception as exc:
             log.error("Social data fetch error: %s", exc)
+        finally:
+            self._fetching_social = False
 
     # ── Signal Emitters (main thread) ────────────────────────────────
 

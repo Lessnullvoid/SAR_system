@@ -507,9 +507,10 @@ class SpectrumPlotWidget(pg.PlotWidget):
 # ---------------------------------------------------------------------------
 
 class MainWindow(QtWidgets.QMainWindow):
-    def __init__(self, synth_mode: str = "both"):
+    def __init__(self, synth_mode: str = "both", antenna_key: str = "loop_antenna"):
         super().__init__()
         self._synth_mode = synth_mode
+        self._initial_antenna = antenna_key
         self.setWindowTitle("Seismo-EM SDR Console")
         self.resize(1500, 900)
 
@@ -557,11 +558,21 @@ class MainWindow(QtWidgets.QMainWindow):
         """)
 
         # State — LO (center) vs VFO (tuning) like SDR# / CubicSDR
-        self._antenna_key = "loop_antenna"
-        self._center_freq_hz = 1.0e6   # LO: RTL-SDR center frequency
-        self._vfo_freq_hz = 1.0e6      # VFO: demodulator frequency (moves on click)
-        self._demod_mode = "am"
-        self._gain_db = 30.0
+        self._antenna_key = self._initial_antenna
+
+        # Sane startup defaults per antenna type
+        _ant_defaults = {
+            "loop_antenna":  (1.0e6, "am",  20.0),
+            "fm_broadcast":  (98.0e6, "fm", 30.0),
+            "discone":       (144.0e6, "fm", 25.0),
+        }
+        _freq, _mode, _gain = _ant_defaults.get(
+            self._antenna_key, (1.0e6, "am", 30.0),
+        )
+        self._center_freq_hz = _freq
+        self._vfo_freq_hz = _freq
+        self._demod_mode = _mode
+        self._gain_db = _gain
         self._squelch_db = -100.0       # disabled
         self._audio_bw_hz = 10_000.0
         self._sample_rate_hz = 2_048_000.0  # updated when worker starts
@@ -2741,6 +2752,13 @@ def main():
         default="both",
         help="Which SuperCollider synth(s) to launch: both, drone, or resonator (default: both)",
     )
+    parser.add_argument(
+        "--antenna",
+        choices=["loop_antenna", "fm_broadcast", "discone"],
+        default="loop_antenna",
+        help="Which antenna is connected: loop_antenna (HF/VLF direct sampling), "
+             "fm_broadcast (VHF whip), or discone (broadband). Default: loop_antenna",
+    )
     args, remaining = parser.parse_known_args()
 
     logging.basicConfig(
@@ -2768,8 +2786,8 @@ def main():
     palette.setColor(QtGui.QPalette.Highlight, QtGui.QColor("#00ccff"))
     app.setPalette(palette)
 
-    log.info("Synth mode: %s", args.synth)
-    win = MainWindow(synth_mode=args.synth)
+    log.info("Synth mode: %s  |  Antenna: %s", args.synth, args.antenna)
+    win = MainWindow(synth_mode=args.synth, antenna_key=args.antenna)
     win.showFullScreen()
 
     # ── Graceful Ctrl+C / SIGTERM shutdown ──
