@@ -277,6 +277,12 @@ class OSCBridge:
         /sar/resonator/* OSC addresses.
         """
         self._send_synth_state("resonator", max_score, kp, dst, total_events, alert_level)
+        log.info(
+            "OSC resonator → activity=%.3f  kp=%.1f  dst=%.0f  "
+            "events=%d  alert=%.2f",
+            max_score, kp, dst, total_events,
+            self._ALERT_LEVEL_MAP.get(alert_level, 0.0),
+        )
 
     def stats(self) -> Dict:
         return {

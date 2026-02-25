@@ -1225,6 +1225,7 @@ class MainWindow(QtWidgets.QMainWindow):
             )
             self._drone_kp = 0.0
             self._drone_dst = 0.0
+            self._drone_alert_level = "info"
             self._sc_process = SuperColliderProcess(
                 scd_path=get_scd_path(self._synth_mode)
             )
@@ -2157,12 +2158,14 @@ class MainWindow(QtWidgets.QMainWindow):
             max_sc = max(scores.values()) if scores else 0.0
             self._drone_last_max_score = max_sc
             total_ev = getattr(self, "_drone_eq_count_24h", 0)
+            _al = getattr(self, "_drone_alert_level", "info")
             if self._synth_mode in ("both", "drone"):
                 self._osc_bridge.send_drone_state(
                     max_score=max_sc,
                     kp=self._drone_kp,
                     dst=self._drone_dst,
                     total_events=total_ev,
+                    alert_level=_al,
                 )
             if self._synth_mode in ("both", "resonator"):
                 self._osc_bridge.send_resonator_state(
@@ -2170,6 +2173,7 @@ class MainWindow(QtWidgets.QMainWindow):
                     kp=self._drone_kp,
                     dst=self._drone_dst,
                     total_events=total_ev,
+                    alert_level=_al,
                 )
 
     @QtCore.pyqtSlot(object)
@@ -2187,13 +2191,16 @@ class MainWindow(QtWidgets.QMainWindow):
         if hasattr(self, "_osc_bridge") and self._osc_bridge.enabled:
             _ms = getattr(self, "_drone_last_max_score", 0.0)
             _ev = getattr(self, "_drone_eq_count_24h", 0)
+            _al = getattr(self, "_drone_alert_level", "info")
             if self._synth_mode in ("both", "drone"):
                 self._osc_bridge.send_drone_state(
                     max_score=_ms, kp=kp, dst=dst, total_events=_ev,
+                    alert_level=_al,
                 )
             if self._synth_mode in ("both", "resonator"):
                 self._osc_bridge.send_resonator_state(
                     max_score=_ms, kp=kp, dst=dst, total_events=_ev,
+                    alert_level=_al,
                 )
 
         # Color code by storm level
@@ -2631,6 +2638,17 @@ class MainWindow(QtWidgets.QMainWindow):
         from datetime import datetime
 
         peak_mhz = result.peak_freq_hz / 1e6 if result.peak_freq_hz > 0 else 0
+
+        # ── Update synth alert level from anomaly score ──
+        sc = result.composite
+        if sc >= 0.8:
+            self._drone_alert_level = "critical"
+        elif sc >= 0.65:
+            self._drone_alert_level = "warning"
+        elif sc >= 0.55:
+            self._drone_alert_level = "watch"
+        else:
+            self._drone_alert_level = "info"
 
         # ── Auto-switch to ML tab on significant anomalies only ──
         if result.composite >= 0.6:

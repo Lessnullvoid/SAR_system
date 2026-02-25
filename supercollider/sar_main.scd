@@ -39,6 +39,7 @@ s.waitForBoot({
         var actL, kpL, dstL, evL, alertL;
         var actW, kpW, dstW, evW, alertW;
         var breath1, breath2, breath3, breath4, breath5;
+        var tide, tideTrig;
         var progressRate, autoLinear, autoWander, autoPhase;
         var sensorShift, chordFloat, chordIdx;
         var rootNote, thirdNote, fifthNote, seventhNote, alertNote;
@@ -65,11 +66,22 @@ s.waitForBoot({
         evW    = (evL    + LFNoise2.kr(0.01).range(-2, 2)).max(0);
         alertW = (alertL + LFNoise2.kr(0.02).range(-0.02, 0.02)).clip(0, 1);
 
-        breath1 = SinOsc.kr(1/73.0).range(0.90, 1.0);
-        breath2 = SinOsc.kr(1/127.0).range(0.92, 1.0);
-        breath3 = LFNoise2.kr(1/180.0).range(0.88, 1.0);
-        breath4 = SinOsc.kr(1/97.0).range(0.93, 1.0);
-        breath5 = LFNoise2.kr(1/240.0).range(0.85, 1.0);
+        breath1 = SinOsc.kr(1/73.0).range(0.82, 1.0);
+        breath2 = SinOsc.kr(1/127.0).range(0.85, 1.0);
+        breath3 = LFNoise2.kr(1/180.0).range(0.80, 1.0);
+        breath4 = SinOsc.kr(1/97.0).range(0.86, 1.0);
+        breath5 = LFNoise2.kr(1/240.0).range(0.78, 1.0);
+
+        // Silence timer — triggers every 9, 13, or 15 minutes (random).
+        // Each trigger plays an envelope: fade out → hold silence → fade in.
+        // Envelope: 1→0 (25s) → 0 (80s) → 0→1 (35s) = ~2.3 min episode.
+        tideTrig = TDuty.kr(Drand([300, 540, 780], inf), 0, 1.0, 0, 1);
+        tide = EnvGen.kr(
+            Env([1, 0, 0, 1], [25, 80, 35], [\sin, 0, \sin]),
+            tideTrig
+        );
+        SendReply.kr(Trig1.kr(tide < 0.01, 1), '/tide_state', [0]);
+        SendReply.kr(Trig1.kr(tide > 0.99, 1), '/tide_state', [1]);
 
         progressRate = evW.linlin(0, 100, 0.00042, 0.0011);
         autoLinear = LFSaw.kr(progressRate, 0).range(0, 6.999);
@@ -143,7 +155,7 @@ s.waitForBoot({
         sig = sig + grainSig;
 
         ampBreath = (breath1 * breath2);
-        amp = actW.linexp(0, 1, 0.12, 0.24) * ampBreath;
+        amp = actW.linexp(0, 1, 0.12, 0.28) * ampBreath * tide;
         sig = sig * amp;
 
         delTime1 = kpW.linlin(0, 9, 0.38, 0.18);
@@ -159,12 +171,14 @@ s.waitForBoot({
         panPos = LFNoise2.kr(0.008).range(-0.5, 0.5);
         sig = Pan2.ar(sig, panPos);
 
+        // Reverb tail swells as drone retreats — lingers in the silence
         revRoom = alertW.linlin(0, 1, 0.50, 0.88)
             * LFNoise2.kr(0.006).range(0.90, 1.0);
         revDamp = kpW.linlin(0, 9, 0.70, 0.30)
             * LFNoise2.kr(0.005).range(0.92, 1.0);
         revMix = actW.linlin(0, 0.5, 0.20, 0.35).clip(0.20, 0.35)
-            * breath3;
+            * breath3
+            * tide.linlin(0.0, 0.5, 1.8, 1.0).clip(1.0, 1.8);
 
         sig = FreeVerb2.ar(sig[0], sig[1], revMix, revRoom.clip(0,1), revDamp.clip(0,1));
 
@@ -187,6 +201,7 @@ s.waitForBoot({
         var actL, kpL, dstL, evL, alertL;
         var actW, kpW, dstW, evW, alertW;
         var breath1, breath2;
+        var tide, tideTrig;
         var stringFreqs;
         var stringGates, partialDepth;
         var dstDetune;
@@ -207,8 +222,19 @@ s.waitForBoot({
         evW    = (evL    + LFNoise2.kr(0.012).range(-1.5, 1.5)).max(0);
         alertW = (alertL + LFNoise2.kr(0.025).range(-0.015, 0.015)).clip(0, 1);
 
-        breath1 = SinOsc.kr(1/83.0).range(0.88, 1.0);
-        breath2 = LFNoise2.kr(1/150.0).range(0.90, 1.0);
+        breath1 = SinOsc.kr(1/83.0).range(0.80, 1.0);
+        breath2 = LFNoise2.kr(1/150.0).range(0.82, 1.0);
+
+        // Silence timer — triggers every 3, 7, or 11 minutes (random).
+        // Shorter episodes than the drone for a more ghostly presence.
+        // Envelope: 1→0 (15s) → 0 (50s) → 0→1 (20s) = ~1.4 min episode.
+        tideTrig = TDuty.kr(Drand([180, 420, 660], inf), 0, 1.0, 0, 1);
+        tide = EnvGen.kr(
+            Env([1, 0, 0, 1], [15, 50, 20], [\sin, 0, \sin]),
+            tideTrig
+        );
+        SendReply.kr(Trig1.kr(tide < 0.01, 1), '/res_tide_state', [0]);
+        SendReply.kr(Trig1.kr(tide > 0.99, 1), '/res_tide_state', [1]);
 
         // E2=82.41, A2=110, D3=146.83, G3=196, B3=246.94, E4=329.63
         stringFreqs = #[82.41, 110.0, 146.83, 196.0, 246.94, 329.63];
@@ -318,12 +344,14 @@ s.waitForBoot({
         sig = sig + dissonantSig;
 
         // Output shaping
-        masterAmp = actW.linexp(0, 1, 0.15, 0.35) * breath1 * breath2;
+        masterAmp = actW.linexp(0, 1, 0.15, 0.40) * breath1 * breath2 * tide;
         sig = sig * masterAmp;
         sig = HPF.ar(sig, 60);
 
-        panPos = LFNoise2.kr(0.005).range(-0.3, 0.3);
-        sig = Pan2.ar(sig, panPos);
+        // Widen spatial field as resonator retreats
+        panPos = LFNoise2.kr(0.005).range(-0.3, 0.3)
+            * tide.linlin(0.0, 0.4, 2.0, 1.0).clip(1.0, 2.0);
+        sig = Pan2.ar(sig, panPos.clip(-1, 1));
 
         sig = Limiter.ar(sig, 0.6);
         Out.ar(out, sig);
@@ -364,10 +392,12 @@ s.waitForBoot({
         var val = msg[1].asFloat;
         ~cachedActivity = val;
         ~drone.set(\activity, val);
-        if (Main.elapsedTime - ~lastPrint > 15, {
-            (">> OSC drone: act=" ++ val.round(0.001)
+        if (Main.elapsedTime - ~lastPrint > 10, {
+            (">> DRONE  act=" ++ val.round(0.001)
              ++ "  kp=" ++ ~cachedKp.round(0.1)
+             ++ "  dst=" ++ ~cachedDst.round(1)
              ++ "  ev=" ++ ~cachedEvents
+             ++ "  alert=" ++ ~cachedAlert.round(0.01)
             ).postln;
             ~lastPrint = Main.elapsedTime;
         });
@@ -377,12 +407,18 @@ s.waitForBoot({
         var val = msg[1].asFloat;
         ~cachedKp = val;
         ~drone.set(\kp, val);
+        (">> DRONE  kp=" ++ val.round(0.1)
+         ++ (if (val > 4, {" [7th voice active]"}, {""}))
+        ).postln;
     }, '/sar/drone/kp');
 
     OSCdef(\sar_dst, { |msg|
         var val = msg[1].asFloat;
         ~cachedDst = val;
         ~drone.set(\dst, val);
+        (">> DRONE  dst=" ++ val.round(1) ++ "nT"
+         ++ (if (val.abs > 30, {" [detuning active]"}, {""}))
+        ).postln;
     }, '/sar/drone/dst');
 
     OSCdef(\sar_events, { |msg|
@@ -396,9 +432,19 @@ s.waitForBoot({
         ~cachedAlert = val;
         ~drone.set(\alert, val);
         if (val > 0.1, {
-            (">> ALERT level=" ++ val.round(0.01)).postln;
+            (">> DRONE  ALERT=" ++ val.round(0.01) ++ " [tension tone]").postln;
         });
     }, '/sar/drone/alert');
+
+    // Drone tide monitoring
+    OSCdef(\drone_tide, { |msg|
+        var state = msg[3].asFloat;
+        if (state < 0.5, {
+            ">> DRONE  ◼ SILENCE — tide reached zero".postln;
+        }, {
+            ">> DRONE  ▶ PRESENT — tide back to full".postln;
+        });
+    }, '/tide_state');
 
     // ─────────────────────────────────────────────────────
     // ── RESONATOR OSC RESPONDERS ────────────────────────
@@ -409,8 +455,12 @@ s.waitForBoot({
     OSCdef(\sar_res_activity, { |msg|
         var val = msg[1].asFloat;
         ~resonator.set(\activity, val);
-        if (Main.elapsedTime - ~resLastPrint > 20, {
-            (">> OSC resonator: act=" ++ val.round(0.001)).postln;
+        if (Main.elapsedTime - ~resLastPrint > 10, {
+            (">> RES  act=" ++ val.round(0.001)
+             ++ "  kp=" ++ ~cachedKp.round(0.1)
+             ++ "  dst=" ++ ~cachedDst.round(1)
+             ++ "  ev=" ++ ~cachedEvents
+            ).postln;
             ~resLastPrint = Main.elapsedTime;
         });
     }, '/sar/resonator/activity');
@@ -431,16 +481,26 @@ s.waitForBoot({
         var val = msg[1].asFloat;
         ~resonator.set(\alert, val);
         if (val > 0.1, {
-            (">> RES ALERT level=" ++ val.round(0.01)).postln;
+            (">> RES  ALERT=" ++ val.round(0.01) ++ " [dissonant partials]").postln;
         });
     }, '/sar/resonator/alert');
+
+    // Resonator tide monitoring
+    OSCdef(\res_tide, { |msg|
+        var state = msg[3].asFloat;
+        if (state < 0.5, {
+            ">> RES  ◼ SILENCE — tide reached zero".postln;
+        }, {
+            ">> RES  ▶ PRESENT — tide back to full".postln;
+        });
+    }, '/res_tide_state');
 
     // ─────────────────────────────────────────────────────
 
     "".postln;
     ">> S.A.R audio engine ready — OSC on port 57120".postln;
-    ">>   /sar/drone/*      → geological drone".postln;
-    ">>   /sar/resonator/*  → string resonator".postln;
+    ">>   /sar/drone/*      → geological drone (silence every 9/13/15 min)".postln;
+    ">>   /sar/resonator/*  → string resonator (silence every 3/7/11 min)".postln;
     "══════════════════════════════════════════════════════".postln;
 });
 )

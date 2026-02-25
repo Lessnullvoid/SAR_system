@@ -216,8 +216,8 @@ A continuous drone that evolves through 7 minor keys (Am → Dm → Gm → Cm �
 **Design philosophy:**
 - **Glacial tempo** — Full chord cycle takes 15-40 minutes. Individual chords linger for 5+ minutes. 20-second portamento makes transitions feel tectonic.
 - **Compositional sensor mapping** — Activity controls *which* voices are present through thresholds (quiet: root + sub only; awakening: third emerges; active: fifth + grains; tense: full voicing with 7th). Kp shapes timbre. Events drive harmonic rhythm.
-- **Near-constant volume** — Interest comes from timbral and harmonic evolution, not loudness changes. Amplitude range is deliberately tight.
-- **Slow breathing** — Overlapping 1-4 minute modulation cycles create swells felt more than heard.
+- **Silence timer** — A random timer triggers a silence episode every 5, 9, or 13 minutes (randomly chosen). Each episode: sinusoidal fade-out (25s) → silence (80s) → sinusoidal fade-in (35s). Independent of sensor data.
+- **Slow breathing** — Overlapping 1-4 minute modulation cycles create deeper swells (down to 0.82x). The reverb tail swells as the drone retreats, leaving a lingering spatial residue in the silence.
 
 ### Sympathetic String Resonator (`sar_resonator`)
 
@@ -225,6 +225,7 @@ A 6-string harmonic bank tuned to E2 A2 D3 G3 B3 E4 (open guitar tuning). Each s
 
 - **Physical excitation** — Impulse-driven with rate controlled by event count, simulating ground-coupled vibration exciting the strings.
 - **Sympathetic resonance** — Partials interact through shared detuning (driven by Dst), so geomagnetic storms make the strings beat and shimmer.
+- **Silence timer** — Triggers every 3, 7, or 11 minutes (randomly chosen). Shorter episodes than the drone: fade-out (15s) → silence (50s) → fade-in (20s). As it retreats, the stereo field widens — the last harmonics scatter before fading.
 - **Alert response** — High anomaly scores inject dissonant energy into the string bank.
 
 ### OSC Sensor Mapping (shared by both synths)

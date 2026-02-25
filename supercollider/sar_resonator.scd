@@ -1,58 +1,40 @@
 // ─────────────────────────────────────────────────────────────
 // S.A.R  —  Sympathetic String Resonator  (SuperCollider)
 // ─────────────────────────────────────────────────────────────
-// Physical string excitation through speaker-to-string coupling.
-// Drives harmonic banks at guitar-string fundamentals with
-// micro-wobble and sparse impulses.  Designed to make real
-// guitar strings vibrate sympathetically.
+// 6-string harmonic bank (E2 A2 D3 G3 B3 E4).
+// Sensor data controls which strings vibrate and how rich
+// their partials are.
 //
-// Architecture:
-//   6 strings (standard tuning): E2 A2 D3 G3 B3 E4
-//   Each string → up to 8 partials (fundamental × [1..8])
-//   Micro-wobble on every partial sweeps through the string's
-//   resonance window.  Sparse impulses act as "plucks".
-//
-// Sensor mapping:
-//   activity  → how many strings are active (E2+A2 always on)
-//   kp        → harmonic richness (upper partials fade in)
-//   dst       → inter-partial detuning (beating during storms)
-//   events    → impulse density (more quakes = more plucks)
-//   alert     → dissonant partials (7th, 11th harmonics)
+// Silence timer: fades to silence every 3/7/11 min (random),
+// holds ~50s, then fades back in.
 //
 // OSC:  /sar/resonator/activity, /kp, /dst, /events, /alert
-//
 // Standalone:  sclang supercollider/sar_resonator.scd
 // ─────────────────────────────────────────────────────────────
 
 (
 s.waitForBoot({
 
-    // ── SynthDef ────────────────────────────────────────────
     SynthDef(\sar_resonator, {
         arg out = 0,
-            activity = 0.0,   // 0–1  max tile score
-            kp       = 1.0,   // 0–9  geomagnetic index
-            dst      = 0.0,   // nT   (negative = storm)
-            events   = 0.0,   // active event count
-            alert    = 0.0;   // 0–1  fusion alert level
+            activity = 0.0,
+            kp       = 1.0,
+            dst      = 0.0,
+            events   = 0.0,
+            alert    = 0.0;
 
-        // ── Variable declarations ──
         var actL, kpL, dstL, evL, alertL;
         var actW, kpW, dstW, evW, alertW;
         var breath1, breath2;
-        var stringFreqs, numStrings;
+        var tide, tideTrig;
+        var stringFreqs;
         var stringGates, partialDepth;
         var dstDetune;
         var sig, impulseSig, impulseRate;
-        var nPartials, i, j;
-        var strSig, partialSig, partFreq, wobbleRate, wobble, partAmp;
         var dissonantSig, disFreq1, disFreq2;
         var masterAmp;
         var panPos;
 
-        // ─────────────────────────────────────────────────────
-        // ── SENSOR ENVELOPES ──
-        // ─────────────────────────────────────────────────────
         actL   = Lag.kr(activity, 20);
         kpL    = Lag.kr(kp, 25);
         dstL   = Lag.kr(dst, 15);
@@ -65,25 +47,23 @@ s.waitForBoot({
         evW    = (evL    + LFNoise2.kr(0.012).range(-1.5, 1.5)).max(0);
         alertW = (alertL + LFNoise2.kr(0.025).range(-0.015, 0.015)).clip(0, 1);
 
-        // ─────────────────────────────────────────────────────
-        // ── BREATHING ──
-        // ─────────────────────────────────────────────────────
-        breath1 = SinOsc.kr(1/83.0).range(0.88, 1.0);
-        breath2 = LFNoise2.kr(1/150.0).range(0.90, 1.0);
+        breath1 = SinOsc.kr(1/83.0).range(0.80, 1.0);
+        breath2 = LFNoise2.kr(1/150.0).range(0.82, 1.0);
 
-        // ─────────────────────────────────────────────────────
-        // ── STRING FUNDAMENTALS (standard guitar tuning) ──
-        // ─────────────────────────────────────────────────────
-        // E2=82.41, A2=110, D3=146.83, G3=196, B3=246.94, E4=329.63
+        // Silence timer — triggers every 3, 7, or 11 minutes (random).
+        // Envelope: 1→0 (15s) → 0 (50s) → 0→1 (20s) = ~1.4 min episode.
+        tideTrig = TDuty.kr(Drand([180, 420, 660], inf), 0, 1.0, 0, 1);
+        tide = EnvGen.kr(
+            Env([1, 0, 0, 1], [15, 50, 20], [\sin, 0, \sin]),
+            tideTrig
+        );
+
+        // Report tide transitions
+        SendReply.kr(Trig1.kr(tide < 0.01, 1), '/res_tide_state', [0]);
+        SendReply.kr(Trig1.kr(tide > 0.99, 1), '/res_tide_state', [1]);
+
         stringFreqs = #[82.41, 110.0, 146.83, 196.0, 246.94, 329.63];
-        numStrings = 6;
 
-        // Activity controls which strings are active:
-        //   0.0  → strings 0,1 (E2, A2)
-        //   0.3  → + string 2 (D3)
-        //   0.5  → + string 3 (G3)
-        //   0.7  → + string 4 (B3)
-        //   0.85 → + string 5 (E4)
         stringGates = [
             1.0,
             1.0,
@@ -93,21 +73,13 @@ s.waitForBoot({
             actW.linlin(0.75, 0.90, 0.0, 1.0).clip(0, 1),
         ];
 
-        // Kp controls how many upper partials are audible (1–8)
         partialDepth = kpW.linlin(0, 9, 2, 8).round(1).clip(1, 8);
-
-        // Dst controls inter-partial micro-detuning
         dstDetune = dstW.abs.linlin(0, 80, 0.0, 0.008).min(0.008);
-
-        // Events control impulse density
         impulseRate = evW.linlin(0, 60, 0.08, 2.5).clip(0.05, 3.0);
 
-        // ─────────────────────────────────────────────────────
-        // ── HARMONIC BANK — 6 strings × up to 8 partials ──
-        // ─────────────────────────────────────────────────────
         sig = DC.ar(0);
 
-        // ── String 0 (E2 82.41 Hz) — always on ──
+        // String 0 — E2 82.41 Hz (always on)
         6.do({ |j|
             var pNum = j + 1;
             var gate = (pNum <= partialDepth);
@@ -119,7 +91,7 @@ s.waitForBoot({
             sig = sig + SinOsc.ar(freq + wob, 0, amp);
         });
 
-        // ── String 1 (A2 110 Hz) — always on ──
+        // String 1 — A2 110 Hz (always on)
         6.do({ |j|
             var pNum = j + 1;
             var gate = (pNum <= partialDepth);
@@ -131,7 +103,7 @@ s.waitForBoot({
             sig = sig + SinOsc.ar(freq + wob, 0, amp);
         });
 
-        // ── String 2 (D3 146.83 Hz) ──
+        // String 2 — D3 146.83 Hz
         5.do({ |j|
             var pNum = j + 1;
             var gate = (pNum <= partialDepth);
@@ -143,7 +115,7 @@ s.waitForBoot({
             sig = sig + SinOsc.ar(freq + wob, 0, amp);
         });
 
-        // ── String 3 (G3 196 Hz) ──
+        // String 3 — G3 196 Hz
         5.do({ |j|
             var pNum = j + 1;
             var gate = (pNum <= partialDepth);
@@ -155,7 +127,7 @@ s.waitForBoot({
             sig = sig + SinOsc.ar(freq + wob, 0, amp);
         });
 
-        // ── String 4 (B3 246.94 Hz) ──
+        // String 4 — B3 246.94 Hz
         4.do({ |j|
             var pNum = j + 1;
             var gate = (pNum <= partialDepth);
@@ -167,7 +139,7 @@ s.waitForBoot({
             sig = sig + SinOsc.ar(freq + wob, 0, amp);
         });
 
-        // ── String 5 (E4 329.63 Hz) ──
+        // String 5 — E4 329.63 Hz
         4.do({ |j|
             var pNum = j + 1;
             var gate = (pNum <= partialDepth);
@@ -179,11 +151,7 @@ s.waitForBoot({
             sig = sig + SinOsc.ar(freq + wob, 0, amp);
         });
 
-        // ─────────────────────────────────────────────────────
-        // ── IMPULSE EXCITATION — sparse resonant plucks ──
-        // ─────────────────────────────────────────────────────
-        // Filtered noise bursts through resonant BPFs at string
-        // fundamentals.  These "kick-start" string vibration.
+        // Impulse excitation — sparse resonant plucks
         impulseSig = DC.ar(0);
         6.do({ |i|
             var trig = Dust.ar(impulseRate * stringGates[i] * LFNoise2.kr(0.01).range(0.3, 1.0));
@@ -191,32 +159,24 @@ s.waitForBoot({
             var reson = BPF.ar(burst, stringFreqs[i], 0.005);
             impulseSig = impulseSig + reson;
         });
-
         sig = sig + (impulseSig * evW.linlin(0, 30, 0.3, 1.0).clip(0.2, 1.0));
 
-        // ─────────────────────────────────────────────────────
-        // ── DISSONANT PARTIALS — alert tension ──
-        // ─────────────────────────────────────────────────────
-        // 7th and 11th harmonics of the lowest string, only
-        // during elevated alert levels.
+        // Dissonant partials — alert tension (7th + 11th harmonics of E2)
         disFreq1 = stringFreqs[0] * 7 * (1 + LFNoise1.kr(0.02).range(-0.003, 0.003));
         disFreq2 = stringFreqs[0] * 11 * (1 + LFNoise1.kr(0.015).range(-0.002, 0.002));
         dissonantSig = SinOsc.ar(disFreq1, 0, 0.012) + SinOsc.ar(disFreq2, 0, 0.008);
         dissonantSig = dissonantSig * alertW.linlin(0.25, 0.7, 0.0, 1.0).clip(0, 1);
         sig = sig + dissonantSig;
 
-        // ─────────────────────────────────────────────────────
-        // ── OUTPUT SHAPING ──
-        // ─────────────────────────────────────────────────────
-        masterAmp = actW.linexp(0, 1, 0.15, 0.35) * breath1 * breath2;
+        // Output shaping
+        masterAmp = actW.linexp(0, 1, 0.15, 0.40) * breath1 * breath2 * tide;
         sig = sig * masterAmp;
-
-        // Gentle highpass to remove DC and sub-bass rumble
         sig = HPF.ar(sig, 60);
 
-        // Very slow stereo drift
-        panPos = LFNoise2.kr(0.005).range(-0.3, 0.3);
-        sig = Pan2.ar(sig, panPos);
+        // Widen spatial field as resonator retreats
+        panPos = LFNoise2.kr(0.005).range(-0.3, 0.3)
+            * tide.linlin(0.0, 0.4, 2.0, 1.0).clip(1.0, 2.0);
+        sig = Pan2.ar(sig, panPos.clip(-1, 1));
 
         sig = Limiter.ar(sig, 0.6);
         Out.ar(out, sig);
@@ -224,53 +184,88 @@ s.waitForBoot({
 
     s.sync;
 
-    ">> S.A.R resonator SynthDef loaded — 6-string harmonic bank.".postln;
-
-    // ── Launch the resonator ─────────────────────────────────
     ~resonator = Synth(\sar_resonator, [
-        \activity, 0.0,
-        \kp,       1.0,
-        \dst,      0.0,
-        \events,   0.0,
-        \alert,    0.0,
+        \activity, 0.0, \kp, 1.0, \dst, 0.0,
+        \events, 0.0, \alert, 0.0,
     ]);
+    ">> Resonator running — E2 A2 D3 G3 B3 E4".postln;
 
-    ">> S.A.R resonator running — E2 A2 D3 G3 B3 E4".postln;
-
-    // ── OSC responders ───────────────────────────────────────
+    // ── OSC responders with continuous monitoring ──────────
     ~resLastPrint = 0;
     ~resCachedActivity = 0.0;
+    ~resCachedKp = 1.0;
+    ~resCachedDst = 0.0;
+    ~resCachedEvents = 0;
+    ~resCachedAlert = 0.0;
 
     OSCdef(\sar_res_activity, { |msg|
         var val = msg[1].asFloat;
         ~resCachedActivity = val;
         ~resonator.set(\activity, val);
-        if (Main.elapsedTime - ~resLastPrint > 20, {
-            (">> RES: activity=" ++ val.round(0.001)).postln;
+        if (Main.elapsedTime - ~resLastPrint > 10, {
+            (">> RES  act=" ++ val.round(0.001)
+             ++ "  kp=" ++ ~resCachedKp.round(0.1)
+             ++ "  dst=" ++ ~resCachedDst.round(1)
+             ++ "  ev=" ++ ~resCachedEvents
+             ++ "  alert=" ++ ~resCachedAlert.round(0.01)
+             ++ "  strings=" ++ [
+                 1, 1,
+                 if(val > 0.15, {1}, {0}),
+                 if(val > 0.35, {1}, {0}),
+                 if(val > 0.55, {1}, {0}),
+                 if(val > 0.75, {1}, {0}),
+             ].sum
+            ).postln;
             ~resLastPrint = Main.elapsedTime;
         });
     }, '/sar/resonator/activity');
 
     OSCdef(\sar_res_kp, { |msg|
-        ~resonator.set(\kp, msg[1].asFloat);
+        var val = msg[1].asFloat;
+        ~resCachedKp = val;
+        ~resonator.set(\kp, val);
+        (">> RES  kp=" ++ val.round(0.1)
+         ++ "  partials=" ++ val.linlin(0, 9, 2, 8).round(1)
+        ).postln;
     }, '/sar/resonator/kp');
 
     OSCdef(\sar_res_dst, { |msg|
-        ~resonator.set(\dst, msg[1].asFloat);
+        var val = msg[1].asFloat;
+        ~resCachedDst = val;
+        ~resonator.set(\dst, val);
+        (">> RES  dst=" ++ val.round(1) ++ "nT"
+         ++ (if (val.abs > 20, {" [beating active]"}, {""}))
+        ).postln;
     }, '/sar/resonator/dst');
 
     OSCdef(\sar_res_events, { |msg|
-        ~resonator.set(\events, msg[1].asFloat);
+        var val = msg[1].asFloat;
+        ~resCachedEvents = val;
+        ~resonator.set(\events, val);
     }, '/sar/resonator/events');
 
     OSCdef(\sar_res_alert, { |msg|
         var val = msg[1].asFloat;
+        ~resCachedAlert = val;
         ~resonator.set(\alert, val);
         if (val > 0.1, {
-            (">> RES: ALERT level=" ++ val.round(0.01)).postln;
+            (">> RES  ALERT=" ++ val.round(0.01) ++ " [dissonant partials]").postln;
         });
     }, '/sar/resonator/alert');
 
-    ">> S.A.R resonator OSC responders active.".postln;
+    // Tide state monitoring
+    OSCdef(\res_tide, { |msg|
+        var state = msg[3].asFloat;
+        if (state < 0.5, {
+            ">> RES  ◼ SILENCE — tide reached zero".postln;
+        }, {
+            ">> RES  ▶ PRESENT — tide back to full".postln;
+        });
+    }, '/res_tide_state');
+
+    "".postln;
+    ">> S.A.R resonator ready — OSC on port 57120".postln;
+    ">> Silence timer: every 3/7/11 min, ~1.4 min episodes".postln;
+    "══════════════════════════════════════════════════════".postln;
 });
 )
