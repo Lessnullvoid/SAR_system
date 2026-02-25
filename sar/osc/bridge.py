@@ -98,6 +98,15 @@ class OSCBridge:
                 log.warning("OSC client init failed: %s", exc)
                 self._enabled = False
 
+    def send_shutdown(self) -> None:
+        """Tell SuperCollider to free synths and exit cleanly."""
+        if self._enabled and self._client is not None:
+            try:
+                self._client.send_message("/sar/shutdown", [])
+                log.info("Sent /sar/shutdown to SuperCollider")
+            except Exception as exc:
+                log.warning("Failed to send /sar/shutdown: %s", exc)
+
     def close(self) -> None:
         """Release the UDP socket."""
         if self._client is not None:

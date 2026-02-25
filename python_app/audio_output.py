@@ -135,10 +135,9 @@ class AudioOutput:
     # Pre-fill the ring buffer with this much silence before starting
     # playback.  Gives the DSP pipeline a head start so the playback
     # thread always has data to read even when the GIL is contended.
-    # 3 seconds provides enough runway to survive GIL contention from
-    # map scanner image loading, sensor fetches, and DSP processing
-    # overhead for narrow-band modes (AM/SSB).
-    PREFILL_SECONDS = 3.0
+    # Pi needs more runway: ARM DSP is ~5x slower, and GIL contention
+    # from GUI/sensors/ML can stall the DSP thread for 100+ ms bursts.
+    PREFILL_SECONDS = 4.0 if _IS_PI else 3.0
 
     # Frames per blocking write.  2048 / 48000 ≈ 42.7 ms per write.
     # During that 42.7 ms the GIL is RELEASED (C code in PortAudio).

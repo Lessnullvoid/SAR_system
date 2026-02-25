@@ -247,6 +247,12 @@ s.waitForBoot({
         });
     }, '/tide_state');
 
+    OSCdef(\sar_shutdown, {
+        ">> S.A.R shutdown received — freeing synth…".postln;
+        ~drone.free;
+        { 0.5.wait; ">> sclang exiting.".postln; 0.exit; }.fork;
+    }, '/sar/shutdown');
+
     "".postln;
     ">> S.A.R drone ready — OSC on port 57120".postln;
     ">> Silence timer: every 9/13/15 min, ~2 min episodes".postln;

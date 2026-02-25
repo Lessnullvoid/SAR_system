@@ -263,6 +263,12 @@ s.waitForBoot({
         });
     }, '/res_tide_state');
 
+    OSCdef(\sar_shutdown, {
+        ">> S.A.R shutdown received — freeing synth…".postln;
+        ~resonator.free;
+        { 0.5.wait; ">> sclang exiting.".postln; 0.exit; }.fork;
+    }, '/sar/shutdown');
+
     "".postln;
     ">> S.A.R resonator ready — OSC on port 57120".postln;
     ">> Silence timer: every 3/7/11 min, ~1.4 min episodes".postln;

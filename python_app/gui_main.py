@@ -181,8 +181,10 @@ class SpectrumWorker(QtCore.QThread):
             return
 
         fs = float(dev.config.sample_rate_hz)
-        fft_cfg = FftConfig(fft_size=4096, window="hann")
-        audio_out = AudioOutput(sample_rate=48000.0, device=self._audio_device)
+        fft_cfg = FftConfig(fft_size=2048 if _IS_PI else 4096, window="hann")
+        _buf_s = 6.0 if _IS_PI else 4.0
+        audio_out = AudioOutput(sample_rate=48000.0, buffer_seconds=_buf_s,
+                                device=self._audio_device)
         self._audio_out = audio_out  # expose for volume control
 
         # ── Compute decimation for EXACT 48 kHz audio ──
@@ -290,8 +292,9 @@ class SpectrumWorker(QtCore.QThread):
         # block gives ~6 Hz display rate — smooth enough for eyes, but
         # frees the GIL so the audio callback can run without starvation.
         display_counter = 0
-        # Pi: less frequent GUI updates = more CPU for audio pipeline
-        DISPLAY_EVERY = 5 if _IS_PI else 3
+        # Pi: aggressive throttle — FFT + Qt emit costs ~15 ms per shot
+        # on ARM; at 10 we get ~1.8 Hz display which is fine for a kiosk.
+        DISPLAY_EVERY = 10 if _IS_PI else 3
 
         # ── Separate reader thread for USB → IQ queue ──────────────
         # read_samples() blocks for ~55 ms per 131k block. If the DSP
@@ -447,9 +450,10 @@ class SpectrumWorker(QtCore.QThread):
                         self.spectrum_ready.emit(freqs, power_db)
                         self.signal_level.emit(float(np.max(power_db)))
 
-                        # Audio debug display
+                        # Audio debug display (skip waveform copy on Pi — saves ~2 ms)
                         if len(audio) > 0:
-                            self.audio_samples.emit(audio.copy())
+                            if not _IS_PI:
+                                self.audio_samples.emit(audio.copy())
                             a_rms = float(np.sqrt(np.mean(audio ** 2)))
                             a_peak = float(np.max(np.abs(audio)))
                             self.audio_debug.emit(
@@ -2746,11 +2750,12 @@ class MainWindow(QtWidgets.QMainWindow):
             self._monitor.close()
             self._monitor = None
 
-        # Close OSC bridge (releases UDP socket)
+        # Graceful SC shutdown: tell synths to free, wait, then kill process
         if hasattr(self, "_osc_bridge") and self._osc_bridge is not None:
+            self._osc_bridge.send_shutdown()
+            time.sleep(0.8)
             self._osc_bridge.close()
 
-        # Stop SuperCollider process
         if hasattr(self, "_sc_process") and self._sc_process is not None:
             self._sc_process.stop()
 

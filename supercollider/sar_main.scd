@@ -496,6 +496,17 @@ s.waitForBoot({
     }, '/res_tide_state');
 
     // ─────────────────────────────────────────────────────
+    // ── SHUTDOWN RESPONDER ────────────────────────────────
+    // ─────────────────────────────────────────────────────
+
+    OSCdef(\sar_shutdown, {
+        ">> S.A.R shutdown received — freeing synths…".postln;
+        ~drone.free;
+        ~resonator.free;
+        { 0.5.wait; ">> sclang exiting.".postln; 0.exit; }.fork;
+    }, '/sar/shutdown');
+
+    // ─────────────────────────────────────────────────────
 
     "".postln;
     ">> S.A.R audio engine ready — OSC on port 57120".postln;
