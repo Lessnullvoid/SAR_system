@@ -450,8 +450,8 @@ class SpectrumWorker(QtCore.QThread):
                         self.spectrum_ready.emit(freqs, power_db)
                         self.signal_level.emit(float(np.max(power_db)))
 
-                        # Audio debug display
-                        if len(audio) > 0:
+                        # Audio debug display (skip on Pi — tab is hidden)
+                        if len(audio) > 0 and not _IS_PI:
                             self.audio_samples.emit(audio.copy())
                             a_rms = float(np.sqrt(np.mean(audio ** 2)))
                             a_peak = float(np.max(np.abs(audio)))
@@ -959,7 +959,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 border-bottom: 2px solid #00ccff;
             }
         """)
-        mid_tabs.addTab(audio_panel, "Audio")
+        if not _IS_PI:
+            mid_tabs.addTab(audio_panel, "Audio")
         mid_tabs.addTab(ml_panel, "ML Monitor")
 
         # ── Sensor Status tab ──
@@ -2499,24 +2500,36 @@ class MainWindow(QtWidgets.QMainWindow):
     # Anomaly detection can interrupt and jump to ML tab immediately.
     # News/seismic tiles scroll the feed when Sensors tab is active.
 
-    _TAB_AUDIO = 0
-    _TAB_ML = 1
-    _TAB_SENSORS = 2
-    _TAB_SOCIAL = 3
+    # Tab indices — Pi hides Audio, shifting remaining tabs down by 1
+    if _IS_PI:
+        _TAB_AUDIO = None
+        _TAB_ML = 0
+        _TAB_SENSORS = 1
+        _TAB_SOCIAL = 2
+    else:
+        _TAB_AUDIO = 0
+        _TAB_ML = 1
+        _TAB_SENSORS = 2
+        _TAB_SOCIAL = 3
 
     # Seconds each tab is displayed before rotating
     _TAB_DURATIONS = {
-        0: 8,    # Audio: 8s  (compact, quick glance)
-        1: 15,   # ML Monitor: 15s  (read band table + anomaly log)
-        2: 25,   # Sensors: 25s  (news feed has many articles to scan)
-        3: 20,   # Social: 20s  (demographics table + territories list)
+        "ml": 15,       # ML Monitor: 15s  (read band table + anomaly log)
+        "sensors": 25,  # Sensors: 25s  (news feed has many articles to scan)
+        "social": 20,   # Social: 20s  (demographics table + territories list)
+        "audio": 8,     # Audio: 8s  (compact, quick glance) — Mac only
     }
 
     def _init_tab_rotation(self) -> None:
         """Set up the automatic tab rotation timer."""
-        self._tab_rotation_order = [
-            self._TAB_ML, self._TAB_SENSORS, self._TAB_SOCIAL, self._TAB_AUDIO
+        rotation = [
+            (self._TAB_ML, "ml"),
+            (self._TAB_SENSORS, "sensors"),
+            (self._TAB_SOCIAL, "social"),
         ]
+        if self._TAB_AUDIO is not None:
+            rotation.append((self._TAB_AUDIO, "audio"))
+        self._tab_rotation_order = rotation
         self._tab_rotation_idx = 0
         self._tab_rotation_timer = QtCore.QTimer(self)
         self._tab_rotation_timer.setSingleShot(True)
@@ -2524,7 +2537,7 @@ class MainWindow(QtWidgets.QMainWindow):
         # Start on ML Monitor
         self._mid_tabs.setCurrentIndex(self._TAB_ML)
         self._tab_rotation_timer.start(
-            self._TAB_DURATIONS[self._TAB_ML] * 1000
+            self._TAB_DURATIONS["ml"] * 1000
         )
 
     def _rotate_tab(self) -> None:
@@ -2534,14 +2547,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self._tab_rotation_idx = (
             (self._tab_rotation_idx + 1) % len(self._tab_rotation_order)
         )
-        tab = self._tab_rotation_order[self._tab_rotation_idx]
-        self._mid_tabs.setCurrentIndex(tab)
+        tab_idx, tab_key = self._tab_rotation_order[self._tab_rotation_idx]
+        self._mid_tabs.setCurrentIndex(tab_idx)
 
-        # If showing Sensors, scroll news to the currently scanned tile
-        if tab == self._TAB_SENSORS:
+        if tab_idx == self._TAB_SENSORS:
             self._scroll_news_to_current_tile()
 
-        duration = self._TAB_DURATIONS.get(tab, 8)
+        duration = self._TAB_DURATIONS.get(tab_key, 8)
         self._tab_rotation_timer.start(duration * 1000)
 
     def _scroll_news_to_current_tile(self) -> None:
@@ -2618,16 +2630,13 @@ class MainWindow(QtWidgets.QMainWindow):
         """Interrupt rotation and jump to ML tab for a significant anomaly."""
         if not hasattr(self, '_mid_tabs'):
             return
-        # Jump to ML tab and reset rotation from there
         self._mid_tabs.setCurrentIndex(self._TAB_ML)
-        # Find ML's position in the rotation so it continues naturally
-        try:
-            self._tab_rotation_idx = self._tab_rotation_order.index(self._TAB_ML)
-        except ValueError:
-            self._tab_rotation_idx = 0
-        # Restart timer with ML duration
+        for i, (idx, key) in enumerate(self._tab_rotation_order):
+            if idx == self._TAB_ML:
+                self._tab_rotation_idx = i
+                break
         self._tab_rotation_timer.start(
-            self._TAB_DURATIONS[self._TAB_ML] * 1000
+            self._TAB_DURATIONS["ml"] * 1000
         )
 
     @QtCore.pyqtSlot(object)
