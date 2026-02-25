@@ -91,10 +91,10 @@ s.waitForBoot({
         chordFloat = (autoPhase + sensorShift).mod(7);
         chordIdx = chordFloat.round(1).min(6);
 
-        rootNote    = Lag.kr(Select.kr(chordIdx, #[45, 38, 43, 48, 41, 46, 39]), 20);
-        thirdNote   = Lag.kr(Select.kr(chordIdx, #[48, 41, 46, 51, 44, 49, 42]), 20);
-        fifthNote   = Lag.kr(Select.kr(chordIdx, #[52, 45, 50, 55, 48, 53, 46]), 20);
-        seventhNote = Lag.kr(Select.kr(chordIdx, #[55, 48, 53, 58, 51, 56, 49]), 20);
+        rootNote    = Lag.kr(Select.kr(chordIdx, #[33, 26, 31, 36, 29, 34, 27]), 20);
+        thirdNote   = Lag.kr(Select.kr(chordIdx, #[36, 29, 34, 39, 32, 37, 30]), 20);
+        fifthNote   = Lag.kr(Select.kr(chordIdx, #[40, 33, 38, 43, 36, 41, 34]), 20);
+        seventhNote = Lag.kr(Select.kr(chordIdx, #[43, 36, 41, 46, 39, 44, 37]), 20);
 
         rootFreq    = rootNote.midicps;
         thirdFreq   = thirdNote.midicps;
@@ -144,13 +144,13 @@ s.waitForBoot({
 
         sig = v1 + v2 + v3 + vSub + v7th + vAlert;
 
-        filtFreq = kpW.linexp(0, 9, 200, 2200)
+        filtFreq = kpW.linexp(0, 9, 80, 1800)
             * LFNoise2.kr(0.012).range(0.82, 1.18);
         filtQ = alertW.linlin(0, 1, 0.45, 0.20);
-        sig = RLPF.ar(sig, filtFreq.clip(100, 5000), filtQ);
+        sig = RLPF.ar(sig, filtFreq.clip(30, 5000), filtQ);
 
         grainSig = Dust.ar(evW.linlin(8, 80, 0.2, 5).max(0.1)) * 0.025
-            * BPF.ar(WhiteNoise.ar, Lag.kr(thirdFreq * 2, 8), 0.15)
+            * BPF.ar(WhiteNoise.ar, Lag.kr(thirdFreq * 4, 8), 0.15)
             * actW.linlin(0.2, 0.5, 0.0, 1.0).clip(0, 1);
         sig = sig + grainSig;
 
@@ -369,7 +369,7 @@ s.waitForBoot({
         \activity, 0.0, \kp, 1.0, \dst, 0.0,
         \events, 0.0, \alert, 0.0,
     ]);
-    ">> Drone running — Am → Dm → Gm → Cm → Fm → Bbm → Ebm".postln;
+    ">> Drone running — Am1 → Dm1 → Gm1 → Cm2 → Fm1 → Bbm1 → Ebm1".postln;
 
     ~resonator = Synth(\sar_resonator, [
         \activity, 0.0, \kp, 1.0, \dst, 0.0,
