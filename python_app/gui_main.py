@@ -450,10 +450,9 @@ class SpectrumWorker(QtCore.QThread):
                         self.spectrum_ready.emit(freqs, power_db)
                         self.signal_level.emit(float(np.max(power_db)))
 
-                        # Audio debug display (skip waveform copy on Pi — saves ~2 ms)
+                        # Audio debug display
                         if len(audio) > 0:
-                            if not _IS_PI:
-                                self.audio_samples.emit(audio.copy())
+                            self.audio_samples.emit(audio.copy())
                             a_rms = float(np.sqrt(np.mean(audio ** 2)))
                             a_peak = float(np.max(np.abs(audio)))
                             self.audio_debug.emit(
