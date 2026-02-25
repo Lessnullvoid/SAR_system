@@ -17,9 +17,9 @@ source .venv/bin/activate
 # Ensure USB sound card is default output
 wpctl set-default "$(wpctl status 2>/dev/null | grep -i 'sound blaster' | grep -oP '^\s*\K\d+' | head -1)" 2>/dev/null
 
-# Select synth: both (default), drone, or resonator
+# Select synth: both, drone, or resonator (default: resonator)
 # Override by setting SAR_SYNTH env var before this script runs
-SAR_SYNTH="${SAR_SYNTH:-both}"
+SAR_SYNTH="${SAR_SYNTH:-resonator}"
 
 # Select antenna: loop_antenna (default), fm_broadcast, or discone
 # Override by setting SAR_ANTENNA env var before this script runs
