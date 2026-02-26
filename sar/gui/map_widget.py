@@ -1813,11 +1813,12 @@ class FaultMapWidget(QtWidgets.QWidget):
                 if titem._news_articles:
                     titem.set_news_data([])
 
-        # Set news for tiles that have articles
+        # Set news for on-fault tiles only (off-fault edge tiles
+        # pull the camera outside the visible corridor)
         news_image_tiles = set()
         for tid, articles in news_by_tile.items():
             titem = self._tile_items.get(tid)
-            if titem:
+            if titem and titem.tile.on_fault:
                 titem.set_news_data(articles)
                 if titem._pixmap_news is not None:
                     news_image_tiles.add(tid)
@@ -1903,11 +1904,12 @@ class FaultMapWidget(QtWidgets.QWidget):
             self._scene.addItem(marker)
             self._history_markers.append(marker)
 
-        # Assign events to tiles for overlay display
+        # Assign events to on-fault tiles only (off-fault edge tiles
+        # pull the camera outside the visible corridor)
         history_image_tiles = set()
         for tid, evts in tile_events.items():
             titem = self._tile_items.get(tid)
-            if titem:
+            if titem and titem.tile.on_fault:
                 titem.set_history_data(evts)
                 if titem._pixmap_history is not None:
                     history_image_tiles.add(tid)
