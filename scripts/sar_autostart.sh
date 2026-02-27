@@ -1,28 +1,17 @@
 #!/bin/bash
-# S.A.R — Auto-start script for Raspberry Pi
-# Waits for the desktop to be ready, then launches the SAR application.
+# S.A.R — Auto-start dispatcher
 #
-# Install: copy sar.desktop to ~/.config/autostart/
+# Detects which Pi this is and runs the matching script.
+# Pi 2 has two USB sound cards (Play! 3 + G3), Pi 1 has one.
+#
+# Install on each Pi:
 #   mkdir -p ~/.config/autostart
 #   cp ~/SAR_system/scripts/sar.desktop ~/.config/autostart/
 
-sleep 5
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-export DISPLAY=:0
-export XDG_RUNTIME_DIR="/run/user/$(id -u)"
-
-cd ~/SAR_system
-source .venv/bin/activate
-
-# Ensure USB sound card is default output
-wpctl set-default "$(wpctl status 2>/dev/null | grep -i 'sound blaster' | grep -oP '^\s*\K\d+' | head -1)" 2>/dev/null
-
-# Select synth: both, drone, or resonator (default: resonator)
-# Override by setting SAR_SYNTH env var before this script runs
-SAR_SYNTH="${SAR_SYNTH:-resonator}"
-
-# Select antenna: loop_antenna (default), fm_broadcast, or discone
-# Override by setting SAR_ANTENNA env var before this script runs
-SAR_ANTENNA="${SAR_ANTENNA:-loop_antenna}"
-
-exec python -m python_app.gui_main --synth "$SAR_SYNTH" --antenna "$SAR_ANTENNA" >> /tmp/sar.log 2>&1
+if lsusb 2>/dev/null | grep -qi "Sound Blaster G3"; then
+    exec "$SCRIPT_DIR/sar_autostart_pi2.sh"
+else
+    exec "$SCRIPT_DIR/sar_autostart_pi1.sh"
+fi

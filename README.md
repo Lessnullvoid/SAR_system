@@ -81,7 +81,9 @@ SAR_system/
 │   └── sar_main.scd               # Drone + Resonator SynthDefs
 │
 ├── scripts/
-│   ├── sar_autostart.sh           # Pi auto-start script
+│   ├── sar_autostart.sh           # Auto-start dispatcher (detects Pi)
+│   ├── sar_autostart_pi1.sh       # Pi 1: discone + drone + Play! 3
+│   ├── sar_autostart_pi2.sh       # Pi 2: loop + resonator + Play! 3 + G3
 │   └── sar.desktop                # Desktop autostart entry
 │
 ├── data/
@@ -238,7 +240,19 @@ A 6-string harmonic bank tuned to E2 A2 D3 G3 B3 E4 (open guitar tuning). Each s
 | `dst` (nT) | Microtonal detuning (storm = dissonance) | Sympathetic detuning across all strings |
 | `alert` (0-1) | Dissonant minor 9th tension tone | Dissonant energy injection |
 
-Python auto-launches `sclang` on startup (via `pw-jack` on PipeWire systems) and kills it on exit. On Raspberry Pi 5, both SDR and SuperCollider audio are mixed through PipeWire to a shared USB sound card.
+Python auto-launches `sclang` on startup (via `pw-jack` on PipeWire systems) and kills it on exit.
+
+### Dual-Pi Audio Routing
+
+| | **Pi 1** | **Pi 2** |
+|---|---|---|
+| Antenna | discone | loop_antenna |
+| Synth | drone | resonator |
+| Sound cards | Play! 3 | Play! 3 + G3 |
+| SDR audio → | Play! 3 | Play! 3 |
+| SuperCollider → | Play! 3 | G3 (routed via `pw-link`) |
+
+On Pi 1, both SDR and SuperCollider share a single USB sound card. On Pi 2, the autostart script routes SuperCollider's JACK output to the G3 via PipeWire, keeping SDR audio on the Play! 3.
 
 ---
 
@@ -332,16 +346,24 @@ python -m python_app.gui_main --synth resonator    # resonator only
 python -m python_app.gui_main --antenna discone --synth drone
 ```
 
-### Environment variables (Pi autostart)
+### Pi autostart (per-device configuration)
 
-On the Raspberry Pi autostart script (`scripts/sar_autostart.sh`), both flags
-can be overridden via environment variables set before boot (e.g. in
-`~/.bashrc` or directly in the script):
+Each Raspberry Pi has a dedicated autostart script with its antenna, synth, and
+audio routing hardcoded. A dispatcher (`scripts/sar_autostart.sh`) detects which
+Pi is running by checking for the G3 sound card via `lsusb`:
 
-| Variable | Default | Equivalent flag |
-|----------|---------|-----------------|
-| `SAR_ANTENNA` | `loop_antenna` | `--antenna` |
-| `SAR_SYNTH` | `both` | `--synth` |
+| Script | Pi | Antenna | Synth | Sound cards |
+|--------|-------|---------|-------|-------------|
+| `sar_autostart_pi1.sh` | Pi 1 | `discone` | `drone` | Play! 3 |
+| `sar_autostart_pi2.sh` | Pi 2 | `loop_antenna` | `resonator` | Play! 3 + G3 |
+
+The `.desktop` entry calls the dispatcher, so the same install step works on
+both Pis:
+
+```bash
+mkdir -p ~/.config/autostart
+cp ~/SAR_system/scripts/sar.desktop ~/.config/autostart/
+```
 
 Requires:
 - **RTL-SDR** USB dongle (pyrtlsdr) — system runs without it (map + sensors still active)
@@ -369,9 +391,9 @@ sudo apt install -y \
 
 Say **Yes** when asked about real-time priority for JACK.
 
-#### 2. Audio setup (PipeWire + USB sound card)
+#### 2. Audio setup (PipeWire + USB sound cards)
 
-Raspberry Pi 5 has **no 3.5mm audio jack**. Both SDR and SuperCollider share a USB sound card through PipeWire (the default audio server on Raspberry Pi OS Bookworm).
+Raspberry Pi 5 has **no 3.5mm audio jack**. Audio routes through USB sound cards via PipeWire (the default audio server on Raspberry Pi OS Bookworm).
 
 Install PipeWire's ALSA and JACK compatibility layers:
 
@@ -385,13 +407,13 @@ Restart PipeWire:
 systemctl --user restart pipewire wireplumber
 ```
 
-Verify the USB sound card appears as a sink:
+Verify USB sound cards appear as sinks:
 
 ```bash
 wpctl status
 ```
 
-Look for your USB card under **Audio → Sinks** (e.g. `Sound Blaster Play! 3 Analog Stereo`). Set it as the default output:
+Look for your USB card(s) under **Audio → Sinks**. Set the primary card (Play! 3) as the default output:
 
 ```bash
 wpctl set-default <SINK_ID>
@@ -405,6 +427,8 @@ Verify audio works:
 ```bash
 speaker-test -c 2 -t wav
 ```
+
+**Pi 2 (dual sound cards):** Pi 2 has both a Play! 3 (SDR audio) and a G3 (SuperCollider). The autostart script (`sar_autostart_pi2.sh`) automatically routes SuperCollider's JACK output to the G3 via `pw-link`. No manual configuration needed — just plug both cards in.
 
 > **Note (Pi 4):** If your Pi has a 3.5mm jack, SDR audio routes there automatically and SuperCollider uses the USB card via JACK — no PipeWire configuration needed.
 
@@ -446,13 +470,8 @@ python -m python_app.gui_main --antenna loop_antenna             # explicit HF l
 python -m python_app.gui_main --antenna discone --synth drone    # discone + drone only
 ```
 
-To change the defaults for auto-start on boot, edit the environment variables
-in `scripts/sar_autostart.sh`:
-
-```bash
-SAR_ANTENNA="loop_antenna"   # or fm_broadcast, discone
-SAR_SYNTH="both"             # or drone, resonator
-```
+To change the per-Pi configuration, edit the corresponding autostart script
+directly (`scripts/sar_autostart_pi1.sh` or `scripts/sar_autostart_pi2.sh`).
 
 The application starts in fullscreen. Press **F** to toggle fullscreen mode.
 
@@ -475,15 +494,16 @@ Then restart the app and click **Satellite** again.
 
 #### Hardware requirements
 
-| Component | Required | Notes |
-|-----------|----------|-------|
-| Raspberry Pi 5 | 8 GB RAM | Pi 4 with 4+ GB may work but is untested |
-| USB sound card | Yes | e.g. Creative Sound Blaster Play! 3 |
-| RTL-SDR dongle | For radio | e.g. RTL-SDR Blog V3/V4 (direct-sampling capable for HF) |
-| Antenna | For radio | Active HF loop (`loop_antenna`), VHF whip (`fm_broadcast`), or broadband discone (`discone`) — set via `--antenna` flag |
-| Display | HDMI | GUI requires a display (not headless) |
-| Internet | Yes | Sensor APIs require network access |
-| SD card | 32 GB+ | ~200 MB for app + tiles + database |
+| Component | Pi 1 | Pi 2 | Notes |
+|-----------|------|------|-------|
+| Raspberry Pi 5 | 8 GB RAM | 8 GB RAM | Pi 4 with 4+ GB may work but is untested |
+| USB sound card | Play! 3 | Play! 3 + G3 | Pi 2 uses G3 for SuperCollider |
+| RTL-SDR dongle | Yes | Yes | RTL-SDR Blog V3/V4 (direct-sampling capable for HF) |
+| Antenna | Discone | HF loop | Set in per-Pi autostart script |
+| Synth | Drone | Resonator | Set in per-Pi autostart script |
+| Display | HDMI | HDMI | GUI requires a display (not headless) |
+| Internet | Yes | Yes | Sensor APIs require network access |
+| SD card | 32 GB+ | 32 GB+ | ~200 MB for app + tiles + database |
 
 #### Monitoring resource usage
 
@@ -511,11 +531,12 @@ Typical usage: ~1.8 GB RAM, ~70% of one CPU core (out of 4).
 - Global dark stylesheet (overrides Pi desktop theme for pure black GUI)
 - Batched lazy loading for news and history images to avoid GIL starvation of audio pipeline
 - Narrative engine manifest generation runs once per cycle (O(N log N) then O(1) per chapter)
-- Audio routed through PipeWire (Pi 5) or BCM2835 jack (Pi 4)
+- Audio routed through PipeWire (Pi 5) or BCM2835 jack (Pi 4). Pi 2 auto-routes SuperCollider to G3 via `pw-link`
 - SuperCollider launched via `pw-jack` for PipeWire JACK compatibility
 - SuperCollider launch deferred 10s after map + SDR are stable
 - Staggered sensor polling to spread network and CPU load
 - News/history images loaded from local cache only (no network downloads at runtime)
+- Per-Pi autostart: dispatcher detects hardware and runs the correct config script
 - Auto-start on boot via desktop autostart entry (see [RASPBERRY_PI_SETUP.md](RASPBERRY_PI_SETUP.md))
 
 ---

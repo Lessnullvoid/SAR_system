@@ -6,11 +6,13 @@ Complete setup instructions for running the S.A.R system on a Raspberry Pi 5 (8 
 
 ## Hardware Requirements
 
-| Component | Required | Notes |
-|-----------|----------|-------|
-| Raspberry Pi 5 | 8 GB RAM | Pi 4 with 4+ GB may work but is untested |
-| USB sound card | Yes | e.g. Creative Sound Blaster Play! 3 |
-| RTL-SDR dongle | For radio | e.g. RTL-SDR Blog V3/V4 |
+| Component | Pi 1 | Pi 2 | Notes |
+|-----------|------|------|-------|
+| Raspberry Pi 5 | 8 GB RAM | 8 GB RAM | Pi 4 with 4+ GB may work but is untested |
+| USB sound card | Play! 3 | Play! 3 + G3 | Pi 2 uses G3 for SuperCollider |
+| RTL-SDR dongle | Yes | Yes | RTL-SDR Blog V3/V4 |
+| Antenna | Discone | HF loop | Set in per-Pi autostart script |
+| Synth | Drone | Resonator | Set in per-Pi autostart script |
 | Display | HDMI | GUI requires a display (not headless) |
 | Internet | Yes | Sensor APIs require network access |
 | SD card | 32 GB+ | ~200 MB for app + tiles + database |
@@ -67,9 +69,9 @@ sudo reboot
 
 ---
 
-## Step 4 — Audio Setup (PipeWire + USB Sound Card)
+## Step 4 — Audio Setup (PipeWire + USB Sound Cards)
 
-Raspberry Pi 5 has **no 3.5mm audio jack**. Both SDR and SuperCollider share a USB sound card through PipeWire (the default audio server on Raspberry Pi OS Bookworm).
+Raspberry Pi 5 has **no 3.5mm audio jack**. Audio routes through USB sound cards via PipeWire (the default audio server on Raspberry Pi OS Bookworm). Pi 1 uses a single Play! 3 for everything. Pi 2 uses a Play! 3 for SDR audio and a G3 for SuperCollider (routed automatically by the autostart script).
 
 ### 4.1 — Install PipeWire ALSA and JACK layers
 
@@ -124,9 +126,15 @@ You should hear "Front Left", "Front Right" from the USB card. Press `Ctrl+C` to
 
 ### How it works
 
-- **SDR audio** → sounddevice → PipeWire → USB sound card
-- **SuperCollider** → scsynth → PipeWire JACK layer → USB sound card
-- **PipeWire** mixes both streams and sends them to the USB output
+**Pi 1 (single card):**
+- **SDR audio** → sounddevice → PipeWire → Play! 3
+- **SuperCollider** → scsynth → PipeWire JACK layer → Play! 3
+- PipeWire mixes both streams to the single USB output
+
+**Pi 2 (dual cards):**
+- **SDR audio** → sounddevice → PipeWire → Play! 3
+- **SuperCollider** → scsynth → PipeWire JACK → G3 (routed by `sar_autostart_pi2.sh` via `pw-link`)
+- Each audio path has a dedicated sound card — no mixing conflicts
 
 > **Note (Pi 4):** If your Pi has a 3.5mm jack, SDR audio routes there automatically and SuperCollider uses the USB card via JACK — no PipeWire configuration needed.
 
@@ -329,13 +337,20 @@ systemctl --user status pipewire wireplumber
 
 ## Auto-Start on Boot
 
-SAR can launch automatically when the Pi desktop loads.
+SAR can launch automatically when the Pi desktop loads. A dispatcher script
+(`sar_autostart.sh`) detects which Pi is running by checking for the G3 sound
+card via `lsusb`, then delegates to the correct per-Pi script:
 
-### Install autostart
+| Script | Pi | Antenna | Synth | Sound cards | SC routing |
+|--------|-------|---------|-------|-------------|------------|
+| `sar_autostart_pi1.sh` | Pi 1 | `discone` | `drone` | Play! 3 | shared card |
+| `sar_autostart_pi2.sh` | Pi 2 | `loop_antenna` | `resonator` | Play! 3 + G3 | `pw-link` to G3 |
+
+### Install autostart (same step on both Pis)
 
 ```bash
 cd ~/SAR_system && git pull
-chmod +x ~/SAR_system/scripts/sar_autostart.sh
+chmod +x ~/SAR_system/scripts/sar_autostart*.sh
 mkdir -p ~/.config/autostart
 cp ~/SAR_system/scripts/sar.desktop ~/.config/autostart/
 ```
@@ -348,10 +363,25 @@ sudo reboot
 
 SAR will start in fullscreen once the desktop is ready. Logs are written to `/tmp/sar.log`.
 
+On Pi 2, the log will show `scsynth routed to G3` once SuperCollider's JACK
+ports are connected to the G3 sound card.
+
 ### Disable autostart
 
 ```bash
 rm ~/.config/autostart/sar.desktop
+```
+
+### Changing per-Pi configuration
+
+Edit the corresponding script directly:
+
+```bash
+# Pi 1
+nano ~/SAR_system/scripts/sar_autostart_pi1.sh
+
+# Pi 2
+nano ~/SAR_system/scripts/sar_autostart_pi2.sh
 ```
 
 ---
@@ -362,8 +392,9 @@ The system automatically detects Raspberry Pi and applies these optimizations:
 
 - **Satellite tiles**: downloaded at 256px (vs 512px desktop) with smooth rendering
 - **Dark GUI**: global black stylesheet overrides the Pi desktop theme
-- **Audio routing**: PipeWire mixing on Pi 5, BCM2835 jack on Pi 4
+- **Audio routing**: PipeWire mixing on Pi 5, BCM2835 jack on Pi 4. Pi 2 auto-routes SuperCollider to G3 via `pw-link`
 - **SuperCollider**: launched via `pw-jack` for PipeWire JACK compatibility
 - **Deferred startup**: SuperCollider starts 10s after map + SDR stabilize
 - **Batched tile loading**: prevents GIL starvation of the audio pipeline
 - **Staggered sensor polling**: spreads network and CPU load over time
+- **Per-Pi autostart**: hardware detection dispatches to the correct config script
