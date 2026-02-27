@@ -132,9 +132,12 @@ You should hear "Front Left", "Front Right" from the USB card. Press `Ctrl+C` to
 - PipeWire mixes both streams to the single USB output
 
 **Pi 2 (dual cards):**
-- **SDR audio** → sounddevice → PipeWire → Play! 3
+- **SDR audio** → sounddevice → PipeWire → Play! 3 (default sink)
 - **SuperCollider** → scsynth → PipeWire JACK → G3 (routed by `sar_autostart_pi2.sh` via `pw-link`)
+- Autostart explicitly sets Play! 3 as default sink and both cards to full volume
 - Each audio path has a dedicated sound card — no mixing conflicts
+
+> **Note:** `pw-link -d` requires exact port names (no wildcards). The autostart script discovers the Play! 3 port name dynamically via `pw-link -i` before disconnecting.
 
 > **Note (Pi 4):** If your Pi has a 3.5mm jack, SDR audio routes there automatically and SuperCollider uses the USB card via JACK — no PipeWire configuration needed.
 
@@ -344,7 +347,7 @@ card via `lsusb`, then delegates to the correct per-Pi script:
 | Script | Pi | Antenna | Synth | Sound cards | SC routing |
 |--------|-------|---------|-------|-------------|------------|
 | `sar_autostart_pi1.sh` | Pi 1 | `discone` | `drone` | Play! 3 | shared card |
-| `sar_autostart_pi2.sh` | Pi 2 | `loop_antenna` | `resonator` | Play! 3 + G3 | `pw-link` to G3 |
+| `sar_autostart_pi2.sh` | Pi 2 | `loop_antenna` | `resonator` | Play! 3 + G3 | Play! 3 default + `pw-link` SC to G3 + both at 100% vol |
 
 ### Install autostart (same step on both Pis)
 

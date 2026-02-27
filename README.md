@@ -252,7 +252,7 @@ Python auto-launches `sclang` on startup (via `pw-jack` on PipeWire systems) and
 | SDR audio → | Play! 3 | Play! 3 |
 | SuperCollider → | Play! 3 | G3 (routed via `pw-link`) |
 
-On Pi 1, both SDR and SuperCollider share a single USB sound card. On Pi 2, the autostart script routes SuperCollider's JACK output to the G3 via PipeWire, keeping SDR audio on the Play! 3.
+On Pi 1, both SDR and SuperCollider share a single USB sound card (mixed by PipeWire). On Pi 2, the autostart script explicitly sets Play! 3 as the default sink, sets both cards to full volume, and routes SuperCollider's JACK output to the G3 via `pw-link`, keeping SDR audio on the Play! 3.
 
 ---
 
@@ -428,7 +428,7 @@ Verify audio works:
 speaker-test -c 2 -t wav
 ```
 
-**Pi 2 (dual sound cards):** Pi 2 has both a Play! 3 (SDR audio) and a G3 (SuperCollider). The autostart script (`sar_autostart_pi2.sh`) automatically routes SuperCollider's JACK output to the G3 via `pw-link`. No manual configuration needed — just plug both cards in.
+**Pi 2 (dual sound cards):** Pi 2 has both a Play! 3 (SDR audio) and a G3 (SuperCollider). The autostart script (`sar_autostart_pi2.sh`) explicitly sets Play! 3 as the default sink, sets both cards to full volume, and routes SuperCollider's JACK output to the G3 via `pw-link`. No manual configuration needed — just plug both cards in.
 
 > **Note (Pi 4):** If your Pi has a 3.5mm jack, SDR audio routes there automatically and SuperCollider uses the USB card via JACK — no PipeWire configuration needed.
 

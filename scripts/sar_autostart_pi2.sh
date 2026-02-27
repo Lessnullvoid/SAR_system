@@ -17,8 +17,12 @@ export XDG_RUNTIME_DIR="/run/user/$(id -u)"
 cd ~/SAR_system
 source .venv/bin/activate
 
-wpctl set-default "$(wpctl status 2>/dev/null \
-    | grep -i 'sound blaster' | grep -oP '^\s*\K\d+' | head -1)" 2>/dev/null
+# Set Play! 3 as default sink (SDR audio) and ensure G3 is at full volume
+PLAY3_ID=$(wpctl status 2>/dev/null | grep -i 'play.*3.*analog stereo' | grep -oP '^\s*\K\d+' | head -1)
+G3_ID=$(wpctl status 2>/dev/null | grep -i 'g3.*analog stereo' | grep -oP '^\s*\K\d+' | head -1)
+[ -n "$PLAY3_ID" ] && wpctl set-default "$PLAY3_ID" 2>/dev/null
+[ -n "$PLAY3_ID" ] && wpctl set-volume "$PLAY3_ID" 1.0 2>/dev/null
+[ -n "$G3_ID" ] && wpctl set-volume "$G3_ID" 1.0 2>/dev/null
 
 # Route SuperCollider (JACK) output to G3 once scsynth ports appear.
 # Polls every 2s for up to 60s, then gives up silently.
@@ -27,8 +31,10 @@ G3_SINK="alsa_output.usb-Creative_Technology_Ltd_Sound_Blaster_G3_27676C972BD491
     for _ in $(seq 1 30); do
         if pw-link -o 2>/dev/null | grep -q "SuperCollider:out_1"; then
             sleep 1
-            pw-link -d "SuperCollider:out_1" "*Play*:playback_FL" 2>/dev/null
-            pw-link -d "SuperCollider:out_2" "*Play*:playback_FR" 2>/dev/null
+            PLAY3_FL=$(pw-link -i 2>/dev/null | grep -i "Play__3.*playback_FL" | head -1 | xargs)
+            PLAY3_FR=$(pw-link -i 2>/dev/null | grep -i "Play__3.*playback_FR" | head -1 | xargs)
+            [ -n "$PLAY3_FL" ] && pw-link -d "SuperCollider:out_1" "$PLAY3_FL" 2>/dev/null
+            [ -n "$PLAY3_FR" ] && pw-link -d "SuperCollider:out_2" "$PLAY3_FR" 2>/dev/null
             pw-link "SuperCollider:out_1" "${G3_SINK}:playback_FL" 2>/dev/null
             pw-link "SuperCollider:out_2" "${G3_SINK}:playback_FR" 2>/dev/null
             echo "$(date) scsynth routed to G3" >> /tmp/sar.log
