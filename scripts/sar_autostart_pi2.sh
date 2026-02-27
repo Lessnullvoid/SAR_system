@@ -22,7 +22,7 @@ PLAY3_ID=$(wpctl status 2>/dev/null | grep -i 'play.*3.*analog stereo' | grep -o
 G3_ID=$(wpctl status 2>/dev/null | grep -i 'g3.*analog stereo' | grep -oP '^\s*\K\d+' | head -1)
 [ -n "$PLAY3_ID" ] && wpctl set-default "$PLAY3_ID" 2>/dev/null
 [ -n "$PLAY3_ID" ] && wpctl set-volume "$PLAY3_ID" 1.0 2>/dev/null
-[ -n "$G3_ID" ] && wpctl set-volume "$G3_ID" 1.0 2>/dev/null
+[ -n "$G3_ID" ] && wpctl set-volume "$G3_ID" 2.5 2>/dev/null
 
 # Route SuperCollider (JACK) output to G3 once scsynth ports appear.
 # Polls every 2s for up to 60s, then gives up silently.
