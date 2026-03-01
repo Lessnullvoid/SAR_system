@@ -1,5 +1,7 @@
 # S.A.R — Raspberry Pi 5 Setup Guide
 
+![S.A.R TCH](img/SAR_TCH.jpg)
+
 Complete setup instructions for running the S.A.R system on a Raspberry Pi 5 (8 GB RAM).
 
 ---
