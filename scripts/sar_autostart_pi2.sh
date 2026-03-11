@@ -17,12 +17,18 @@ export XDG_RUNTIME_DIR="/run/user/$(id -u)"
 cd ~/SAR_system
 source .venv/bin/activate
 
-# Set Play! 3 as default sink (SDR audio) and ensure G3 is at full volume
-PLAY3_ID=$(wpctl status 2>/dev/null | grep -i 'play.*3.*analog stereo' | grep -oP '^\s*\K\d+' | head -1)
-G3_ID=$(wpctl status 2>/dev/null | grep -i 'g3.*analog stereo' | grep -oP '^\s*\K\d+' | head -1)
+# Wait for USB sound cards to appear (may take a few seconds after boot)
+for _ in $(seq 1 10); do
+    PLAY3_ID=$(wpctl status 2>/dev/null | grep -i 'play.*3.*analog stereo' | grep -oP '^\s*\K\d+' | head -1)
+    G3_ID=$(wpctl status 2>/dev/null | grep -i 'g3.*analog stereo' | grep -oP '^\s*\K\d+' | head -1)
+    [ -n "$PLAY3_ID" ] && [ -n "$G3_ID" ] && break
+    sleep 2
+done
+
 [ -n "$PLAY3_ID" ] && wpctl set-default "$PLAY3_ID" 2>/dev/null
 [ -n "$PLAY3_ID" ] && wpctl set-volume "$PLAY3_ID" 1.0 2>/dev/null
 [ -n "$G3_ID" ] && wpctl set-volume "$G3_ID" 2.5 2>/dev/null
+echo "$(date) Play!3=$PLAY3_ID G3=$G3_ID" >> /tmp/sar.log
 
 # Route SuperCollider (JACK) output to G3 once scsynth ports appear.
 # Polls every 2s for up to 60s, then gives up silently.
@@ -37,7 +43,13 @@ G3_SINK="alsa_output.usb-Creative_Technology_Ltd_Sound_Blaster_G3_27676C972BD491
             [ -n "$PLAY3_FR" ] && pw-link -d "SuperCollider:out_2" "$PLAY3_FR" 2>/dev/null
             pw-link "SuperCollider:out_1" "${G3_SINK}:playback_FL" 2>/dev/null
             pw-link "SuperCollider:out_2" "${G3_SINK}:playback_FR" 2>/dev/null
-            echo "$(date) scsynth routed to G3" >> /tmp/sar.log
+            # Set volumes AFTER connections are established (overrides WirePlumber's saved state)
+            sleep 2
+            G3_VOL_ID=$(wpctl status 2>/dev/null | grep -i 'g3.*analog stereo' | grep -oP '^\s*\K\d+' | head -1)
+            P3_VOL_ID=$(wpctl status 2>/dev/null | grep -i 'play.*3.*analog stereo' | grep -oP '^\s*\K\d+' | head -1)
+            [ -n "$G3_VOL_ID" ] && wpctl set-volume "$G3_VOL_ID" 2.5 2>/dev/null
+            [ -n "$P3_VOL_ID" ] && wpctl set-volume "$P3_VOL_ID" 1.0 2>/dev/null
+            echo "$(date) scsynth routed to G3, volumes set (G3=2.5 Play3=1.0)" >> /tmp/sar.log
             exit 0
         fi
         sleep 2
