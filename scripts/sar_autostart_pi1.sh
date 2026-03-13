@@ -19,7 +19,7 @@ source .venv/bin/activate
 # Wait for USB sound card to appear (may take a few seconds after boot)
 for _ in $(seq 1 10); do
     PLAY3_ID=$(wpctl status 2>/dev/null \
-        | grep -i 'play.*3.*analog stereo' | grep -oP '^\s*\K\d+' | head -1)
+        | grep -i 'play.*3.*analog stereo' | grep -oP '\d+(?=\.)' | head -1)
     [ -n "$PLAY3_ID" ] && break
     sleep 2
 done
@@ -36,11 +36,14 @@ fi
 (
     sleep 30
     P3_ID=$(wpctl status 2>/dev/null \
-        | grep -i 'play.*3.*analog stereo' | grep -oP '^\s*\K\d+' | head -1)
+        | grep -i 'play.*3.*analog stereo' | grep -oP '\d+(?=\.)' | head -1)
     [ -n "$P3_ID" ] && wpctl set-default "$P3_ID" 2>/dev/null
     [ -n "$P3_ID" ] && wpctl set-volume "$P3_ID" 1.0 2>/dev/null
     echo "$(date) Play! 3 volume re-applied (ID $P3_ID)" >> /tmp/sar.log
 ) &
+
+# Schedule daily shutdown at 21:00
+sudo shutdown -h 21:00 >> /tmp/sar.log 2>&1 &
 
 exec python -m python_app.gui_main \
     --synth drone \

@@ -19,8 +19,8 @@ source .venv/bin/activate
 
 # Wait for USB sound cards to appear (may take a few seconds after boot)
 for _ in $(seq 1 10); do
-    PLAY3_ID=$(wpctl status 2>/dev/null | grep -i 'play.*3.*analog stereo' | grep -oP '^\s*\K\d+' | head -1)
-    G3_ID=$(wpctl status 2>/dev/null | grep -i 'g3.*analog stereo' | grep -oP '^\s*\K\d+' | head -1)
+    PLAY3_ID=$(wpctl status 2>/dev/null | grep -i 'play.*3.*analog stereo' | grep -oP '\d+(?=\.)' | head -1)
+    G3_ID=$(wpctl status 2>/dev/null | grep -i 'g3.*analog stereo' | grep -oP '\d+(?=\.)' | head -1)
     [ -n "$PLAY3_ID" ] && [ -n "$G3_ID" ] && break
     sleep 2
 done
@@ -45,8 +45,8 @@ G3_SINK="alsa_output.usb-Creative_Technology_Ltd_Sound_Blaster_G3_27676C972BD491
             pw-link "SuperCollider:out_2" "${G3_SINK}:playback_FR" 2>/dev/null
             # Set volumes AFTER connections are established (overrides WirePlumber's saved state)
             sleep 2
-            G3_VOL_ID=$(wpctl status 2>/dev/null | grep -i 'g3.*analog stereo' | grep -oP '^\s*\K\d+' | head -1)
-            P3_VOL_ID=$(wpctl status 2>/dev/null | grep -i 'play.*3.*analog stereo' | grep -oP '^\s*\K\d+' | head -1)
+            G3_VOL_ID=$(wpctl status 2>/dev/null | grep -i 'g3.*analog stereo' | grep -oP '\d+(?=\.)' | head -1)
+            P3_VOL_ID=$(wpctl status 2>/dev/null | grep -i 'play.*3.*analog stereo' | grep -oP '\d+(?=\.)' | head -1)
             [ -n "$G3_VOL_ID" ] && wpctl set-volume "$G3_VOL_ID" 2.5 2>/dev/null
             [ -n "$P3_VOL_ID" ] && wpctl set-volume "$P3_VOL_ID" 1.0 2>/dev/null
             echo "$(date) scsynth routed to G3, volumes set (G3=2.5 Play3=1.0)" >> /tmp/sar.log
@@ -55,6 +55,9 @@ G3_SINK="alsa_output.usb-Creative_Technology_Ltd_Sound_Blaster_G3_27676C972BD491
         sleep 2
     done
 ) &
+
+# Schedule daily shutdown at 21:00
+sudo shutdown -h 21:00 >> /tmp/sar.log 2>&1 &
 
 exec python -m python_app.gui_main \
     --synth resonator \
