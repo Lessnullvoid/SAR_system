@@ -2,6 +2,8 @@
 
 **Multi-sensor research and sonic instrument for the San Andreas Fault**
 
+[Watch the video on Vimeo](https://vimeo.com/1177976507)
+
 ![S.A.R System](img/sar1.png)
 
 ---
